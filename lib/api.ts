@@ -680,14 +680,31 @@ export async function createSubmissionRequest(
   return response.json();
 }
 
-export async function rateSubmissionRequest(token: string, submissionId: string, rating: number) {
+export async function rateSubmissionRequest(
+  token: string,
+  submissionId: string,
+  rating: number,
+  options?: {
+    comment?: string;
+    rubric?: {
+      completeness: number;
+      quality: number;
+      communication: number;
+      requirementAlignment: number;
+    };
+  },
+) {
   const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/rate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ rating }),
+    body: JSON.stringify({
+      rating,
+      comment: options?.comment,
+      rubric: options?.rubric,
+    }),
   });
 
   if (!response.ok) {
@@ -709,6 +726,72 @@ export async function requestSubmissionChangesRequest(token: string, submissionI
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to request changes"));
+  }
+
+  return response.json();
+}
+
+export async function listSubmissionReviewCommentsRequest(token: string, submissionId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/review-comments`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load review comments"));
+  }
+
+  return response.json();
+}
+
+export async function createSubmissionReviewCommentRequest(
+  token: string,
+  submissionId: string,
+  payload: {
+    content: string;
+    commentType?: "note" | "suggestion" | "issue" | "approve" | "reject" | "request_changes";
+    visibility?: "both" | "client_only" | "freelancer_only";
+    parentCommentId?: string;
+    revisionId?: string;
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/review-comments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to add review comment"));
+  }
+
+  return response.json();
+}
+
+export async function submitSubmissionReviewDecisionRequest(
+  token: string,
+  submissionId: string,
+  payload: {
+    decision: "approve" | "request_changes" | "reject";
+    comment: string;
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/review-decision`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to submit review decision"));
   }
 
   return response.json();

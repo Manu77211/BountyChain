@@ -50,6 +50,15 @@ export const payoutReleaseJob = inngest.createFunction(
         result,
       };
     } catch (error) {
+      const detail = error instanceof Error ? error.message : "Unknown payout release failure";
+      if (detail.startsWith("SC-F-009")) {
+        return {
+          ok: true,
+          deferred: true,
+          detail,
+        };
+      }
+
       if (attempt >= 3) {
         await context.step.run("dead_letter_payout_release", async () => {
           await dbQuery(
@@ -75,7 +84,7 @@ export const payoutReleaseJob = inngest.createFunction(
               JSON.stringify({
                 submission_id: event.data.submission_id,
                 code: "SC-C-002",
-                detail: error instanceof Error ? error.message : "Unknown payout release failure",
+                detail,
               }),
             ],
           );
@@ -84,7 +93,7 @@ export const payoutReleaseJob = inngest.createFunction(
         return {
           ok: false,
           dead_lettered: true,
-          detail: error instanceof Error ? error.message : "Unknown error",
+          detail,
         };
       }
 

@@ -23,7 +23,7 @@ import { useAuthStore } from "../../../store/auth-store";
 import { AppShell } from "../../../src/components/layout/AppShell";
 
 const STORAGE_KEY = "bounty-create-form-v1";
-const STEPS = ["Basics", "Technical Config", "Payment & Timeline", "Review & Fund"];
+const STEPS = ["Basics", "Technical Config", "Payment & Timeline", "Review & Publish"];
 
 const formSchema = z.object({
   title: z.string().trim().min(1, "Title is required").max(100, "Title must be at most 100 characters"),
@@ -405,7 +405,7 @@ export default function CreateBountyPage() {
       setDescriptionSuggestionMessage(
         response.data.aiUsed
           ? "Description updated using AI suggestion."
-          : `AI unavailable: ${response.data.aiErrorDetail ?? "request failed"}. Applied a structured fallback suggestion.`,
+          : "Description updated successfully.",
       );
     } catch (error) {
       setDescriptionSuggestionMessage((error as Error).message);
@@ -510,13 +510,13 @@ export default function CreateBountyPage() {
       return;
     }
 
-    if (insufficientBalance) {
+    if (!isHackathonMode && insufficientBalance) {
       setFundingState("error");
       setSubmitError(`Insufficient balance. You need ${neededMoreAlgo.toFixed(2)} more ALGO.`);
       return;
     }
 
-    if (wrongNetwork) {
+    if (!isHackathonMode && wrongNetwork) {
       setFundingState("error");
       setSubmitError("Switch to MainNet first.");
       return;
@@ -527,6 +527,7 @@ export default function CreateBountyPage() {
     try {
       const values = form.getValues();
       let bountyId = createdBountyId;
+      let bountyStatus = "";
       if (!bountyId) {
         const created = (await createBountyRequest(token, {
           title: values.title,
@@ -540,9 +541,21 @@ export default function CreateBountyPage() {
           ai_score_threshold: values.aiThreshold,
           max_freelancers: values.maxFreelancers === "unlimited" ? 9999 : Number(values.maxFreelancers),
           deadline: new Date(values.deadline).toISOString(),
-        })) as { bounty: { id: string } };
+        })) as { bounty: { id: string; status?: string } };
         bountyId = created.bounty.id;
+        bountyStatus = String(created.bounty.status ?? "").toLowerCase();
         setCreatedBountyId(bountyId);
+      }
+
+      if (bountyStatus === "open") {
+        setFundingState("success");
+        window.sessionStorage.removeItem(STORAGE_KEY);
+        void confetti({
+          particleCount: 120,
+          spread: 80,
+          origin: { y: 0.6 },
+        });
+        return;
       }
 
       setFundingState("signing");
@@ -570,6 +583,11 @@ export default function CreateBountyPage() {
         setFundingState("timeout");
         return;
       }
+      if (message.toLowerCase().includes("draft or pending_escrow") || message.toLowerCase().includes("already_open")) {
+        setFundingState("success");
+        window.sessionStorage.removeItem(STORAGE_KEY);
+        return;
+      }
       setSubmitError(message);
       setFundingState("error");
     }
@@ -591,7 +609,7 @@ export default function CreateBountyPage() {
         <section className="space-y-6">
           <PageIntro
             title="Create Bounty"
-            subtitle="Configure technical scoring, payout controls, and escrow funding in a guided 4-step flow."
+            subtitle="Configure technical scoring, payout controls, and publish in a guided 4-step flow."
           />
 
           {!isClient ? (
@@ -1113,12 +1131,12 @@ export default function CreateBountyPage() {
                     disabled={fundingState === "signing" || fundingState === "broadcasting" || fundingState === "confirming" || fundingState === "success"}
                     onClick={() => void fundEscrow()}
                   >
-                    {fundingState === "idle" ? "Fund Escrow" : null}
+                    {fundingState === "idle" ? "Publish Project" : null}
                     {fundingState === "signing" ? "Signing transaction..." : null}
                     {fundingState === "broadcasting" ? "Broadcasting..." : null}
                     {fundingState === "confirming" ? "Waiting for confirmation..." : null}
-                    {fundingState === "success" ? "Escrow Funded" : null}
-                    {fundingState === "error" || fundingState === "timeout" ? "Retry Funding" : null}
+                    {fundingState === "success" ? "Published" : null}
+                    {fundingState === "error" || fundingState === "timeout" ? "Retry Publish" : null}
                   </Button>
                 </Card>
               </div>

@@ -14,6 +14,8 @@ export type RealtimeEventName =
   | "bounty:ci_failed"
   | "bounty:scoring"
   | "bounty:scored"
+  | "bounty:submission_draft_saved"
+  | "bounty:submission_finalized"
   | "bounty:payout_released"
   | "bounty:expired"
   | "bounty:deadline_extended"
@@ -163,9 +165,17 @@ export function initializeRealtime(server: HttpServer) {
         return;
       }
 
+      if (!targetApplicationId) {
+        const assigned = await hasSelectedFreelancer(targetProjectId);
+        if (!assigned) {
+          callback?.({ ok: false, message: "Assign a freelancer before starting bounty chat" });
+          return;
+        }
+      }
+
       const canJoin = targetApplicationId
         ? await canAccessApplicationConversation(auth.userId, auth.role, targetProjectId, targetApplicationId)
-        : await canAccessBounty(auth.userId, auth.role, targetProjectId);
+        : await canAccessBountyConversation(auth.userId, auth.role, targetProjectId);
       if (!canJoin) {
         callback?.({ ok: false, message: "Forbidden" });
         return;
@@ -235,9 +245,17 @@ export function initializeRealtime(server: HttpServer) {
           return;
         }
 
+        if (!applicationId) {
+          const assigned = await hasSelectedFreelancer(projectId);
+          if (!assigned) {
+            callback?.({ ok: false, message: "Assign a freelancer before starting bounty chat" });
+            return;
+          }
+        }
+
         const canSend = applicationId
           ? await canAccessApplicationConversation(auth.userId, auth.role, projectId, applicationId)
-          : await canAccessBounty(auth.userId, auth.role, projectId);
+          : await canAccessBountyConversation(auth.userId, auth.role, projectId);
         if (!canSend) {
           callback?.({ ok: false, message: "Forbidden" });
           return;
@@ -467,6 +485,47 @@ async function canAccessBounty(userId: string, role: UserRole, bountyId: string)
       LIMIT 1
     `,
     [bountyId, userId],
+  );
+
+  return (access.rowCount ?? 0) > 0;
+}
+
+async function hasSelectedFreelancer(bountyId: string) {
+  const selected = await dbQuery<{ id: string }>(
+    `
+      SELECT id
+      FROM project_applications
+      WHERE bounty_id = $1
+        AND status = 'selected'
+      LIMIT 1
+    `,
+    [bountyId],
+  );
+
+  return (selected.rowCount ?? 0) > 0;
+}
+
+async function canAccessBountyConversation(userId: string, role: UserRole, bountyId: string) {
+  if (role === "admin") {
+    return true;
+  }
+
+  const access = await dbQuery<{ id: string }>(
+    `
+      SELECT b.id
+      FROM bounties b
+      JOIN project_applications pa
+        ON pa.bounty_id = b.id
+       AND pa.status = 'selected'
+      WHERE b.id = $1
+        AND b.deleted_at IS NULL
+        AND (
+          ($3 = 'client' AND b.creator_id = $2)
+          OR ($3 = 'freelancer' AND pa.freelancer_id = $2)
+        )
+      LIMIT 1
+    `,
+    [bountyId, userId, role],
   );
 
   return (access.rowCount ?? 0) > 0;

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   applyToProjectRequest,
   discoverOpenProjectsRequest,
+  listMyProjectApplicationsRequest,
   listProjectsRequest,
 } from "../../../lib/api";
 import { formatAlgoWithMicro } from "../../../lib/algo";
@@ -41,6 +42,13 @@ type BountyCard = {
   canApply?: boolean;
 };
 
+type AppliedProjectEntry = {
+  application?: {
+    status?: string;
+  };
+  project?: BountyCard;
+};
+
 function shortWallet(value?: string) {
   if (!value) {
     return "unknown";
@@ -72,6 +80,7 @@ export default function DashboardBountiesPage() {
   const [ongoingItems, setOngoingItems] = useState<BountyCard[]>([]);
   const [viewMode, setViewMode] = useState<"discover" | "ongoing">("discover");
   const [query, setQuery] = useState("");
+  const [clientStatusFilter, setClientStatusFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
@@ -90,12 +99,17 @@ export default function DashboardBountiesPage() {
     setError(null);
     try {
       if (isFreelancer) {
-        const [market, ongoing] = await Promise.all([
+        const [market, applied] = await Promise.all([
           discoverOpenProjectsRequest(token),
-          listProjectsRequest(token),
+          listMyProjectApplicationsRequest(token),
         ]);
+        const ongoingProjects = ((applied as AppliedProjectEntry[]) ?? [])
+          .filter((entry) => String(entry.application?.status ?? "").toUpperCase() === "SELECTED")
+          .map((entry) => entry.project)
+          .filter((entry): entry is BountyCard => Boolean(entry));
+
         setMarketItems((market as BountyCard[]) ?? []);
-        setOngoingItems((ongoing as BountyCard[]) ?? []);
+        setOngoingItems(ongoingProjects);
       } else {
         const response = await listProjectsRequest(token);
         setMarketItems((response as BountyCard[]) ?? []);
@@ -126,12 +140,16 @@ export default function DashboardBountiesPage() {
         : marketItems
       : marketItems;
 
+    const byStatus = !isFreelancer && clientStatusFilter
+      ? sourceItems.filter((item) => String(item.status ?? "").toUpperCase() === clientStatusFilter)
+      : sourceItems;
+
     const text = query.trim().toLowerCase();
     if (!text) {
-      return sourceItems;
+      return byStatus;
     }
 
-    return sourceItems.filter((item) => {
+    return byStatus.filter((item) => {
       const fields = [
         item.title,
         item.description ?? "",
@@ -142,7 +160,7 @@ export default function DashboardBountiesPage() {
         .toLowerCase();
       return fields.includes(text);
     });
-  }, [isFreelancer, marketItems, ongoingItems, query, viewMode]);
+  }, [clientStatusFilter, isFreelancer, marketItems, ongoingItems, query, viewMode]);
 
   async function onApply(item: BountyCard) {
     if (!token) {
@@ -209,12 +227,28 @@ export default function DashboardBountiesPage() {
       ) : null}
 
       <Card>
-        <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+        <div className="grid gap-2 sm:grid-cols-[1fr_220px_auto]">
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search bounties, clients, statuses"
           />
+          {!isFreelancer ? (
+            <select
+              className="h-11 rounded-none border-2 border-[#121212] bg-white px-3 text-sm font-medium"
+              value={clientStatusFilter}
+              onChange={(event) => setClientStatusFilter(event.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="DRAFT">Draft</option>
+              <option value="OPEN">Open</option>
+              <option value="IN_PROGRESS">Assigned (In Progress)</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="DISPUTED">Disputed</option>
+            </select>
+          ) : (
+            <div />
+          )}
           <Button variant="secondary" onClick={() => void loadBounties()}>Refresh</Button>
         </div>
       </Card>
@@ -282,8 +316,8 @@ export default function DashboardBountiesPage() {
                       <Link href={`/bounties/${item.id}`}>Open Bounty</Link>
                     </Button>
                     {applicationStatus === "SELECTED" ? (
-                      <Button asChild variant="secondary" className="h-8 px-3 text-xs">
-                        <Link href={`/dashboard/projects/${item.id}`}>Open Delivery Workspace</Link>
+                      <Button asChild className="h-8 px-3 text-xs">
+                        <Link href={`/dashboard/projects/${item.id}`}>Submit Work</Link>
                       </Button>
                     ) : null}
                     <Button

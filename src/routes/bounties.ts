@@ -60,6 +60,25 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
 
     const existing = await getBountyByIdempotencyKey(idempotencyKey);
     if (existing) {
+      if (existing.status !== "open") {
+        const opened = await dbQuery(
+          `
+            UPDATE bounties
+            SET status = 'open',
+                updated_at = NOW()
+            WHERE id = $1
+              AND deleted_at IS NULL
+            RETURNING ${BOUNTY_SELECT_COLUMNS}
+          `,
+          [existing.id],
+        );
+
+        return response.status(200).json({
+          bounty: opened.rows[0] ?? existing,
+          idempotent: true,
+        });
+      }
+
       return response.status(200).json({
         bounty: existing,
         idempotent: true,
@@ -106,7 +125,7 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
       )
       VALUES (
         $1, $2, $3, $4, $5,
-        $6, $7, $8, 'draft', $9,
+        $6, $7, $8, 'open', $9,
         $10, $11, $12, $13
       )
       RETURNING ${BOUNTY_SELECT_COLUMNS}
@@ -139,6 +158,26 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
       if (maybePg.code === "23505") {
         const existingByKey = await getBountyByIdempotencyKey(idempotencyKey);
         if (existingByKey) {
+          if (existingByKey.status !== "open") {
+            const opened = await dbQuery(
+              `
+                UPDATE bounties
+                SET status = 'open',
+                    updated_at = NOW()
+                WHERE id = $1
+                  AND deleted_at IS NULL
+                RETURNING ${BOUNTY_SELECT_COLUMNS}
+              `,
+              [existingByKey.id],
+            );
+
+            return response.status(200).json({
+              bounty: opened.rows[0] ?? existingByKey,
+              idempotent: true,
+              warnings,
+            });
+          }
+
           return response.status(200).json({
             bounty: existingByKey,
             idempotent: true,
@@ -172,8 +211,15 @@ router.post(
       if (bounty.creator_id !== request.user.userId) {
         throw new AppError(403, 403, "Only the bounty creator can fund escrow");
       }
-      if (bounty.status !== "draft") {
-        throw new AppError(409, 409, "Bounty must be in draft status before funding");
+      if (bounty.status === "open") {
+        return response.status(200).json({
+          bounty,
+          tx_id: null,
+          already_open: true,
+        });
+      }
+      if (!new Set(["draft", "pending_escrow"]).has(bounty.status)) {
+        throw new AppError(409, 409, "Bounty must be in draft or pending_escrow status before funding");
       }
 
       await algorand.assertWalletHasEscrowBalance(

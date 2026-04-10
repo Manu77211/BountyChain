@@ -5,7 +5,9 @@ import { dbQuery } from "../../lib/db/client";
 import type { UserRole } from "../../lib/db/types";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
+import { emitToBounty } from "../realtime/socket";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate";
+import { buildSubmissionFeedbackReport } from "../services/submissionFeedback.service";
 
 const router = Router();
 
@@ -103,8 +105,15 @@ type ProjectDetailRow = {
   milestones: Array<{ id: string; title: string; status: string; amount: number }> | null;
   latest_submission_id: string | null;
   latest_submission_status: string | null;
+  latest_submission_stage: string | null;
+  latest_submission_gate_status: string | null;
   latest_submission_file_url: string | null;
   latest_submission_client_rating: number | null;
+  latest_submission_client_comment: string | null;
+  latest_feedback_client_summary: string | null;
+  latest_feedback_freelancer_summary: string | null;
+  latest_feedback_implemented_items: unknown;
+  latest_feedback_missing_items: unknown;
   validation_reports: Array<{
     aiScore: number | null;
     clientRating: number | null;
@@ -116,6 +125,7 @@ type ProjectDetailRow = {
 
 type ApplicantRow = {
   id: string;
+  status: string;
   message: string | null;
   proposed_amount: string | null;
   estimated_days: number | null;
@@ -358,6 +368,32 @@ async function hasSelectedFreelancer(projectId: string) {
   return (selected.rowCount ?? 0) > 0;
 }
 
+async function canAccessBountyConversation(userId: string, role: UserRole, projectId: string) {
+  if (role === "admin") {
+    return true;
+  }
+
+  const access = await dbQuery<{ id: string }>(
+    `
+      SELECT b.id
+      FROM bounties b
+      JOIN project_applications pa
+        ON pa.bounty_id = b.id
+       AND pa.status = 'selected'
+      WHERE b.id = $1
+        AND b.deleted_at IS NULL
+        AND (
+          ($3 = 'client' AND b.creator_id = $2)
+          OR ($3 = 'freelancer' AND pa.freelancer_id = $2)
+        )
+      LIMIT 1
+    `,
+    [projectId, userId, role],
+  );
+
+  return (access.rowCount ?? 0) > 0;
+}
+
 function projectSelectSql() {
   return `
     SELECT b.id,
@@ -458,7 +494,8 @@ async function loadMarketplaceProjects(userId: string) {
     `
       ${baseSql}
       WHERE b.deleted_at IS NULL
-        AND b.status IN ('open', 'in_progress')
+        AND b.status = 'open'
+        AND selected.freelancer_id IS NULL
       ORDER BY b.created_at DESC
       LIMIT 100
     `,
@@ -651,23 +688,11 @@ router.get("/conversations", requireAuth, async (request, response, next) => {
           WHERE b.deleted_at IS NULL
             AND (
               ($1 = 'admin')
-              OR ($1 = 'client' AND b.creator_id = $2)
               OR (
-                $1 = 'freelancer'
+                selected.freelancer_id IS NOT NULL
                 AND (
-                  EXISTS (
-                    SELECT 1
-                    FROM submissions s
-                    WHERE s.bounty_id = b.id
-                      AND s.freelancer_id = $2
-                  )
-                  OR EXISTS (
-                    SELECT 1
-                    FROM project_applications pa
-                    WHERE pa.bounty_id = b.id
-                      AND pa.freelancer_id = $2
-                      AND pa.status = 'selected'
-                  )
+                  ($1 = 'client' AND b.creator_id = $2)
+                  OR ($1 = 'freelancer' AND selected.freelancer_id = $2)
                 )
               )
             )
@@ -825,7 +850,7 @@ router.post("/", requireAuth, validateBody(createProjectSchema), async (request,
           'main',
           $6,
           $7,
-          'draft',
+          'open',
           $8,
           60,
           1,
@@ -883,9 +908,16 @@ router.get(
     const query = request.query as unknown as { applicationId?: string };
     const applicationId = query.applicationId?.trim();
 
+    if (!applicationId) {
+      const assigned = await hasSelectedFreelancer(projectId);
+      if (!assigned) {
+        throw new AppError(409, 409, "Assign a freelancer before starting bounty chat");
+      }
+    }
+
     const allowed = applicationId
       ? await canAccessApplicationConversation(user.userId, user.role, projectId, applicationId)
-      : await canAccessProject(user.userId, user.role, projectId);
+      : await canAccessBountyConversation(user.userId, user.role, projectId);
     if (!allowed) {
       throw new AppError(403, 403, "Forbidden");
     }
@@ -960,8 +992,8 @@ router.post(
         throw new AppError(409, 409, "XC-001: bounty creator cannot apply to own bounty");
       }
 
-      if (!new Set(["open", "in_progress"]).has(bounty.rows[0].status)) {
-        throw new AppError(409, 409, "Bounty is not open for applications");
+      if (bounty.rows[0].status !== "open") {
+        throw new AppError(409, 409, "Only open bounties can receive applications");
       }
 
       const selected = await dbQuery<{ id: string }>(
@@ -1034,6 +1066,7 @@ router.get("/:id/applicants", requireAuth, validateParams(projectIdParamsSchema)
     const applicants = await dbQuery<ApplicantRow>(
       `
         SELECT pa.id,
+               pa.status,
                pa.message,
                pa.proposed_amount::text,
                pa.estimated_days,
@@ -1053,6 +1086,7 @@ router.get("/:id/applicants", requireAuth, validateParams(projectIdParamsSchema)
     return response.status(200).json(
       applicants.rows.map((row) => ({
         id: row.id,
+        status: String(row.status ?? "pending").toUpperCase(),
         message: row.message,
         proposedAmount: row.proposed_amount ? Number(row.proposed_amount) : undefined,
         estimatedDays: row.estimated_days ?? undefined,
@@ -1142,32 +1176,20 @@ router.post(
 
       const body = request.body as z.infer<typeof assignSchema>;
 
-      const freelancer = await dbQuery<{ id: string }>(
+      const targetApplication = await dbQuery<{ id: string; freelancer_id: string }>(
         `
-          SELECT id
-          FROM users
-          WHERE id = $1
-            AND role = 'freelancer'
-            AND deleted_at IS NULL
+          SELECT id, freelancer_id
+          FROM project_applications
+          WHERE bounty_id = $1
+            AND freelancer_id = $2
           LIMIT 1
-        `,
-        [body.freelancerId],
-      );
-
-      if ((freelancer.rowCount ?? 0) === 0) {
-        throw new AppError(404, 404, "Freelancer not found");
-      }
-
-      const createdApplication = await dbQuery<{ id: string }>(
-        `
-          INSERT INTO project_applications (bounty_id, freelancer_id, status)
-          VALUES ($1, $2, 'selected')
-          ON CONFLICT (bounty_id, freelancer_id)
-          DO UPDATE SET status = 'selected', updated_at = NOW()
-          RETURNING id
         `,
         [projectId, body.freelancerId],
       );
+
+      if ((targetApplication.rowCount ?? 0) === 0) {
+        throw new AppError(409, 409, "Only applicants can be selected for assignment");
+      }
 
       await dbQuery(
         `
@@ -1176,7 +1198,7 @@ router.post(
               updated_at = NOW()
           WHERE bounty_id = $2
         `,
-        [createdApplication.rows[0].id, projectId],
+        [targetApplication.rows[0].id, projectId],
       );
 
       await dbQuery(
@@ -1192,7 +1214,8 @@ router.post(
 
       return response.status(200).json({
         assigned: true,
-        freelancerId: body.freelancerId,
+        freelancerId: targetApplication.rows[0].freelancer_id,
+        applicationId: targetApplication.rows[0].id,
       });
     } catch (error) {
       return next(error);
@@ -1237,6 +1260,7 @@ router.post(
 
       const { id: projectId, milestoneId } = request.params;
       const body = request.body as z.infer<typeof milestoneSubmissionSchema>;
+      const submissionKind = body.kind ?? "FINAL";
 
       const milestone = await dbQuery<{ id: string; bounty_id: string }>(
         `
@@ -1253,31 +1277,214 @@ router.post(
         throw new AppError(404, 404, "Milestone not found");
       }
 
+      const bounty = await dbQuery<{ acceptance_criteria: string }>(
+        `
+          SELECT acceptance_criteria
+          FROM bounties
+          WHERE id = $1
+            AND deleted_at IS NULL
+          LIMIT 1
+        `,
+        [projectId],
+      );
+
+      if ((bounty.rowCount ?? 0) === 0) {
+        throw new AppError(404, 404, "Bounty not found");
+      }
+
       const evidenceUrl = body.fileUrl ?? `https://example.com/submissions/${projectId}/${milestoneId}`;
       const branchName = `milestone-${milestoneId.slice(0, 8)}`;
       const idempotency = `milestone-${milestoneId}-${user.userId}`;
+      const reviewWindowMinutes = Number(process.env.REVIEW_WINDOW_MINUTES ?? "720");
 
-      const created = await dbQuery<{ id: string; status: string }>(
+      const existingSubmission = await dbQuery<{
+        id: string;
+      }>(
         `
-          INSERT INTO submissions (
-            bounty_id,
-            freelancer_id,
-            github_pr_url,
-            github_branch,
-            github_repo_id,
-            status,
-            scoring_idempotency_key,
-            submission_received_at
-          )
-          VALUES ($1, $2, $3, $4, 1, 'submitted', $5, NOW())
-          RETURNING id, status
+          SELECT id
+          FROM submissions
+          WHERE bounty_id = $1
+            AND freelancer_id = $2
+            AND status IN ('draft', 'submitted', 'in_progress', 'awaiting_ci', 'validating', 'passed', 'disputed')
+          ORDER BY updated_at DESC
+          LIMIT 1
         `,
-        [projectId, user.userId, evidenceUrl, branchName, `${idempotency}-${randomUUID()}`],
+        [projectId, user.userId],
       );
 
+      let submissionId: string;
+
+      if ((existingSubmission.rowCount ?? 0) > 0) {
+        submissionId = existingSubmission.rows[0].id;
+        await dbQuery(
+          `
+            UPDATE submissions
+            SET github_pr_url = $2,
+                github_branch = $3,
+                status = $4,
+                submission_stage = $5,
+                review_gate_status = $6,
+                review_window_ends_at = $7,
+                submission_received_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+          `,
+          [
+            submissionId,
+            evidenceUrl,
+            branchName,
+            submissionKind === "FINAL" ? "submitted" : "draft",
+            submissionKind === "FINAL" ? "final" : "draft",
+            submissionKind === "FINAL" ? "awaiting_client_review" : "none",
+            submissionKind === "FINAL"
+              ? new Date(Date.now() + reviewWindowMinutes * 60_000).toISOString()
+              : null,
+          ],
+        );
+      } else {
+        const created = await dbQuery<{ id: string }>(
+          `
+            INSERT INTO submissions (
+              bounty_id,
+              freelancer_id,
+              github_pr_url,
+              github_branch,
+              github_repo_id,
+              status,
+              submission_stage,
+              review_gate_status,
+              review_window_ends_at,
+              scoring_idempotency_key,
+              submission_received_at
+            )
+            VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8, $9, NOW())
+            RETURNING id
+          `,
+          [
+            projectId,
+            user.userId,
+            evidenceUrl,
+            branchName,
+            submissionKind === "FINAL" ? "submitted" : "draft",
+            submissionKind === "FINAL" ? "final" : "draft",
+            submissionKind === "FINAL" ? "awaiting_client_review" : "none",
+            submissionKind === "FINAL"
+              ? new Date(Date.now() + reviewWindowMinutes * 60_000).toISOString()
+              : null,
+            `${idempotency}-${randomUUID()}`,
+          ],
+        );
+        submissionId = created.rows[0].id;
+      }
+
+      const latestRevision = await dbQuery<{ revision_no: number }>(
+        `
+          SELECT COALESCE(MAX(revision_no), 0) AS revision_no
+          FROM submission_revisions
+          WHERE submission_id = $1
+        `,
+        [submissionId],
+      );
+
+      const nextRevisionNo = Number(latestRevision.rows[0]?.revision_no ?? 0) + 1;
+
+      const revision = await dbQuery<{ id: string }>(
+        `
+          INSERT INTO submission_revisions (
+            submission_id,
+            bounty_id,
+            freelancer_id,
+            revision_no,
+            stage,
+            artifact_url,
+            notes,
+            metadata
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+          RETURNING id
+        `,
+        [
+          submissionId,
+          projectId,
+          user.userId,
+          nextRevisionNo,
+          submissionKind === "FINAL" ? "final" : "draft",
+          evidenceUrl,
+          body.notes ?? null,
+          JSON.stringify({ milestone_id: milestoneId, kind: submissionKind }),
+        ],
+      );
+
+      const feedback = buildSubmissionFeedbackReport({
+        acceptanceCriteria: bounty.rows[0].acceptance_criteria,
+        artifactUrl: evidenceUrl,
+        notes: body.notes ?? null,
+        clientComment: null,
+      });
+
+      await dbQuery(
+        `
+          INSERT INTO submission_feedback_reports (
+            submission_id,
+            revision_id,
+            generated_by,
+            ai_payload,
+            checklist_payload,
+            implemented_items,
+            missing_items,
+            client_summary,
+            freelancer_summary,
+            freelancer_suggestions
+          )
+          VALUES ($1, $2, 'hybrid', $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9::jsonb)
+        `,
+        [
+          submissionId,
+          revision.rows[0].id,
+          JSON.stringify(feedback.aiPayload),
+          JSON.stringify(feedback.checklistPayload),
+          JSON.stringify(feedback.implementedItems),
+          JSON.stringify(feedback.missingItems),
+          feedback.clientSummary,
+          feedback.freelancerSummary,
+          JSON.stringify(feedback.freelancerSuggestions),
+        ],
+      );
+
+      await dbQuery(
+        `
+          UPDATE bounties
+          SET status = CASE
+                         WHEN $2 = 'DRAFT' THEN 'draft'
+                         WHEN status = 'draft' THEN 'in_progress'
+                         ELSE status
+                       END,
+              updated_at = NOW()
+          WHERE id = $1
+            AND deleted_at IS NULL
+        `,
+        [projectId, submissionKind],
+      );
+
+      emitToBounty(projectId, submissionKind === "FINAL" ? "bounty:submission_finalized" : "bounty:submission_draft_saved", {
+        bounty_id: projectId,
+        submission_id: submissionId,
+        revision_no: nextRevisionNo,
+        stage: submissionKind,
+      });
+
       return response.status(201).json({
-        id: created.rows[0].id,
-        status: created.rows[0].status,
+        id: submissionId,
+        status: submissionKind === "FINAL" ? "submitted" : "draft",
+        stage: submissionKind,
+        revisionNo: nextRevisionNo,
+        feedback: {
+          clientSummary: feedback.clientSummary,
+          freelancerSummary: feedback.freelancerSummary,
+          implementedItems: feedback.implementedItems,
+          missingItems: feedback.missingItems,
+          suggestions: feedback.freelancerSuggestions,
+        },
         notes: body.notes ?? null,
       });
     } catch (error) {
@@ -1420,8 +1627,15 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                COALESCE(ms.milestones, '[]'::json) AS milestones,
                ls.id AS latest_submission_id,
                ls.status AS latest_submission_status,
+               ls.submission_stage AS latest_submission_stage,
+               ls.review_gate_status AS latest_submission_gate_status,
                ls.github_pr_url AS latest_submission_file_url,
                ls.client_rating_stars AS latest_submission_client_rating,
+               ls.last_client_comment AS latest_submission_client_comment,
+               lfr.client_summary AS latest_feedback_client_summary,
+               lfr.freelancer_summary AS latest_feedback_freelancer_summary,
+               lfr.implemented_items AS latest_feedback_implemented_items,
+               lfr.missing_items AS latest_feedback_missing_items,
                COALESCE(vr.validation_reports, '[]'::json) AS validation_reports,
                COALESCE(ap.applicants_preview, '[]'::json) AS applicants_preview
         FROM bounties b
@@ -1455,13 +1669,26 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
         LEFT JOIN LATERAL (
           SELECT s.id,
                  s.status,
+                 s.submission_stage,
+                 s.review_gate_status,
                  s.github_pr_url,
-                 s.client_rating_stars
+                 s.client_rating_stars,
+                 s.last_client_comment
           FROM submissions s
           WHERE s.bounty_id = b.id
           ORDER BY s.updated_at DESC
           LIMIT 1
         ) ls ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT fr.client_summary,
+                 fr.freelancer_summary,
+                 fr.implemented_items,
+                 fr.missing_items
+          FROM submission_feedback_reports fr
+          WHERE fr.submission_id = ls.id
+          ORDER BY fr.created_at DESC
+          LIMIT 1
+        ) lfr ON TRUE
         LEFT JOIN LATERAL (
           SELECT json_agg(
             json_build_object(
@@ -1542,6 +1769,19 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                 status: mapSubmissionStatus(row.latest_submission_status),
                 fileUrl: row.latest_submission_file_url ?? undefined,
                 clientRating: row.latest_submission_client_rating ?? undefined,
+                stage: row.latest_submission_stage ?? undefined,
+                reviewGateStatus: row.latest_submission_gate_status ?? undefined,
+                clientFeedback: row.latest_submission_client_comment ?? undefined,
+                feedbackSummary: {
+                  client: row.latest_feedback_client_summary ?? undefined,
+                  freelancer: row.latest_feedback_freelancer_summary ?? undefined,
+                  implementedItems: Array.isArray(row.latest_feedback_implemented_items)
+                    ? row.latest_feedback_implemented_items
+                    : [],
+                  missingItems: Array.isArray(row.latest_feedback_missing_items)
+                    ? row.latest_feedback_missing_items
+                    : [],
+                },
               },
             ]
           : [],

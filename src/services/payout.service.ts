@@ -272,6 +272,9 @@ async function runPrePayoutChecks(input: {
     submission_status: SubmissionStatus;
     submission_final_score: number | null;
     ai_integrity_flag: boolean;
+    review_gate_status: string;
+    review_window_ends_at: Date | null;
+    approved_for_payout_at: Date | null;
     submission_received_at: Date;
     milestone_id: string | null;
     bounty_creator_id: string;
@@ -290,6 +293,9 @@ async function runPrePayoutChecks(input: {
              s.status AS submission_status,
              s.final_score AS submission_final_score,
              s.ai_integrity_flag,
+             s.review_gate_status,
+             s.review_window_ends_at,
+             s.approved_for_payout_at,
              s.submission_received_at,
              p.milestone_id,
              b.creator_id AS bounty_creator_id,
@@ -317,8 +323,37 @@ async function runPrePayoutChecks(input: {
   }
 
   const row = state.rows[0];
-  if (row.submission_status !== "validating") {
-    throw new Error("SC-F-003: submission must be validating before payout");
+  if (!(row.submission_status === "validating" || row.submission_status === "passed")) {
+    throw new Error("SC-F-003: submission must be validating or passed before payout");
+  }
+
+  if (row.review_gate_status === "changes_requested") {
+    throw new Error("SC-F-009: payout blocked while submission is in changes_requested state");
+  }
+
+  if (
+    row.review_gate_status === "awaiting_client_review" &&
+    row.review_window_ends_at &&
+    row.review_window_ends_at.getTime() > Date.now()
+  ) {
+    throw new Error("SC-F-009: review window still active, payout deferred");
+  }
+
+  if (
+    row.review_gate_status === "awaiting_client_review" &&
+    row.review_window_ends_at &&
+    row.review_window_ends_at.getTime() <= Date.now()
+  ) {
+    await dbQuery(
+      `
+        UPDATE submissions
+        SET review_gate_status = 'auto_released',
+            approved_for_payout_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [row.submission_id],
+    );
   }
 
   if (!(row.bounty_status === "in_progress" || row.bounty_status === "accepted")) {

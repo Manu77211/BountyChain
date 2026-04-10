@@ -125,6 +125,12 @@ export interface SubmissionRow {
   final_score: number | null;
   evidence_source: "live" | "cache";
   status: SubmissionStatus;
+  submission_stage?: "draft" | "final";
+  review_gate_status?: "none" | "awaiting_client_review" | "changes_requested" | "approved" | "auto_released";
+  review_window_ends_at?: Date | null;
+  approved_for_payout_at?: Date | null;
+  approved_for_payout_by?: string | null;
+  last_client_comment?: string | null;
   scoring_idempotency_key: string;
   ai_scoring_in_progress?: boolean;
   ai_scoring_status?: "idle" | "in_progress" | "completed" | "timeout" | "parse_failed" | "manual_review";
@@ -197,6 +203,66 @@ export interface NotificationRow {
   payload: Record<string, unknown>;
   delivered: boolean;
   failed_attempts: number;
+  created_at: Date;
+}
+
+export interface SubmissionRevisionRow {
+  id: string;
+  submission_id: string;
+  bounty_id: string;
+  freelancer_id: string;
+  revision_no: number;
+  stage: "draft" | "final";
+  artifact_url: string;
+  notes: string | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface SubmissionReviewCommentRow {
+  id: string;
+  submission_id: string;
+  revision_id: string | null;
+  author_id: string;
+  parent_comment_id: string | null;
+  comment_type: "note" | "suggestion" | "issue" | "approve" | "reject" | "request_changes";
+  visibility: "both" | "client_only" | "freelancer_only";
+  content: string;
+  is_resolved: boolean;
+  resolved_by: string | null;
+  resolved_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface SubmissionReviewRubricRow {
+  id: string;
+  submission_id: string;
+  revision_id: string | null;
+  reviewer_id: string;
+  completeness_score: number;
+  quality_score: number;
+  communication_score: number;
+  requirement_alignment_score: number;
+  overall_score: number;
+  decision: "approve" | "request_changes" | "reject";
+  review_comment: string | null;
+  created_at: Date;
+}
+
+export interface SubmissionFeedbackReportRow {
+  id: string;
+  submission_id: string;
+  revision_id: string | null;
+  generated_by: "ai" | "system" | "hybrid";
+  ai_payload: Record<string, unknown>;
+  checklist_payload: Record<string, unknown>;
+  implemented_items: unknown[];
+  missing_items: unknown[];
+  client_summary: string;
+  freelancer_summary: string;
+  freelancer_suggestions: unknown[];
+  client_comment: string | null;
   created_at: Date;
 }
 

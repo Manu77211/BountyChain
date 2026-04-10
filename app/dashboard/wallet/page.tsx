@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { listProjectsRequest, meRequest } from "../../../lib/api";
+import { listMyProjectApplicationsRequest, listProjectsRequest, meRequest } from "../../../lib/api";
 import { useAuthStore } from "../../../store/auth-store";
 import { Button, Card, PageIntro, Pill } from "../../../components/ui/primitives";
 
@@ -23,6 +23,13 @@ type WalletProject = {
 
 type WalletProfile = {
   walletBalance?: number;
+};
+
+type FreelancerApplicationEntry = {
+  application?: {
+    status?: string;
+  };
+  project?: WalletProject;
 };
 
 export default function DashboardWalletPage() {
@@ -45,10 +52,22 @@ export default function DashboardWalletPage() {
       setLoading(true);
       setError(null);
       try {
-        const [profile, projectList] = await Promise.all([meRequest(token), listProjectsRequest(token)]);
+        const isFreelancer = String(user?.role ?? "").toUpperCase() === "FREELANCER";
+        const [profile, rawProjects] = await Promise.all([
+          meRequest(token),
+          isFreelancer ? listMyProjectApplicationsRequest(token) : listProjectsRequest(token),
+        ]);
+
+        const projectList = isFreelancer
+          ? ((rawProjects as FreelancerApplicationEntry[]) ?? [])
+              .filter((entry) => String(entry.application?.status ?? "").toUpperCase() === "SELECTED")
+              .map((entry) => entry.project)
+              .filter((entry): entry is WalletProject => Boolean(entry))
+          : ((rawProjects as WalletProject[]) ?? []);
+
         const typedProfile = profile as WalletProfile;
         setBalance(typedProfile.walletBalance ?? 0);
-        setProjects(projectList as WalletProject[]);
+        setProjects(projectList);
       } catch (requestError) {
         setError((requestError as Error).message);
       } finally {
@@ -57,7 +76,7 @@ export default function DashboardWalletPage() {
     }
 
     void load();
-  }, [token]);
+  }, [token, user?.role]);
 
   const lockedAmount = useMemo(() => {
     return projects.reduce((sum, project) => {

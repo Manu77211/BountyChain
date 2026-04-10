@@ -201,9 +201,14 @@ export default function DashboardPage() {
               </Button>
             ) : (
               <Button asChild>
-                <Link href="/dashboard/freelancers">Browse Marketplace</Link>
+                <Link href="/dashboard/projects">Submit Work</Link>
               </Button>
             )}
+            {!isClient ? (
+              <Button asChild variant="secondary">
+                <Link href="/dashboard/freelancers">Browse Marketplace</Link>
+              </Button>
+            ) : null}
             <Button asChild variant="secondary">
               <Link href="/dashboard/bounties">Browse Bounties</Link>
             </Button>

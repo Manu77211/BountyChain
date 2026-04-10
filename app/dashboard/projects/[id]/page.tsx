@@ -5,14 +5,12 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   approveProjectDraftRequest,
-  assignFreelancerRequest,
   createProjectMeetingRequest,
   createMilestoneSubmissionRequest,
   deleteProjectRequest,
   getProjectRequest,
   listProjectMeetingsRequest,
   listProjectApplicantsRequest,
-  listFreelancersRequest,
   raiseBountyAmountRequest,
   requestSubmissionChangesRequest,
   rateSubmissionRequest,
@@ -26,15 +24,24 @@ import { Button, Card, Input, PageIntro, Pill, ProgressBar, Select, Textarea } f
 type MilestoneFormState = {
   fileUrl: string;
   notes: string;
+  isGithubWork: boolean;
 };
 
 type SubmissionView = {
   id: string;
   status: string;
+  stage?: string;
+  reviewGateStatus?: string;
   fileUrl?: string;
   notes?: string;
   clientRating?: number;
   clientFeedback?: string;
+  feedbackSummary?: {
+    client?: string;
+    freelancer?: string;
+    implementedItems?: string[];
+    missingItems?: string[];
+  };
 };
 
 type MilestoneView = {
@@ -65,6 +72,7 @@ type ValidationReportView = {
 
 type ApplicantView = {
   id: string;
+  status?: string;
   message?: string;
   proposedAmount?: number;
   estimatedDays?: number;
@@ -88,12 +96,6 @@ type ProjectMeeting = {
   scheduledBy: string;
 };
 
-type FreelancerOption = {
-  id: string;
-  name: string;
-  rating?: number;
-};
-
 type ProjectDetailView = {
   id: string;
   title: string;
@@ -113,6 +115,15 @@ type ProjectDetailView = {
   validationReports?: ValidationReportView[];
 };
 
+function isGithubUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    return parsed.hostname.toLowerCase().includes("github.com");
+  } catch {
+    return false;
+  }
+}
+
 export default function DashboardProjectDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -120,9 +131,7 @@ export default function DashboardProjectDetailPage() {
   const { token, user, hydrate } = useAuthStore();
 
   const [project, setProject] = useState<ProjectDetailView | null>(null);
-  const [freelancers, setFreelancers] = useState<FreelancerOption[]>([]);
   const [applicants, setApplicants] = useState<ApplicantView[]>([]);
-  const [selectedFreelancerId, setSelectedFreelancerId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -166,9 +175,7 @@ export default function DashboardProjectDetailPage() {
         setMeetings([]);
       }
 
-      if (user?.role === "CLIENT" && !data.freelancer) {
-        const freelancerData = (await listFreelancersRequest({})) as FreelancerOption[];
-        setFreelancers(freelancerData);
+      if (user?.role === "CLIENT") {
         const applicantData = (await listProjectApplicantsRequest(token, projectId)) as ApplicantView[];
         setApplicants(applicantData);
       } else {
@@ -176,7 +183,7 @@ export default function DashboardProjectDetailPage() {
       }
 
       const initialForms = (data.milestones ?? []).reduce((acc: Record<string, MilestoneFormState>, milestone) => {
-        acc[milestone.id] = { fileUrl: "", notes: "" };
+        acc[milestone.id] = { fileUrl: "", notes: "", isGithubWork: false };
         return acc;
       }, {});
       setMilestoneForms(initialForms);
@@ -243,30 +250,6 @@ export default function DashboardProjectDetailPage() {
     return (approved / project.milestones.length) * 100;
   }, [project]);
 
-  async function onAssignFreelancer() {
-    if (!token || !selectedFreelancerId || !projectId) {
-      return;
-    }
-
-    if (!hasDistinctParticipants(project?.client?.id, selectedFreelancerId)) {
-      setError("Client and freelancer cannot be the same user on a bounty.");
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
-
-    try {
-      await assignFreelancerRequest(token, projectId, selectedFreelancerId);
-      setSelectedFreelancerId("");
-      await loadProject();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function onApproveDraft() {
     if (!token || !projectId) {
       return;
@@ -309,10 +292,27 @@ export default function DashboardProjectDetailPage() {
     }
   }
 
-  async function onSubmitMilestone(event: FormEvent, milestoneId: string) {
-    event.preventDefault();
-
+  async function onSubmitMilestone(milestoneId: string, submissionKind: "DRAFT" | "FINAL") {
     if (!token || !projectId) {
+      return;
+    }
+
+    const state = milestoneForms[milestoneId] ?? { fileUrl: "", notes: "", isGithubWork: false };
+    const fileUrl = state.fileUrl.trim();
+    const notes = state.notes.trim();
+
+    if (notes.length < 12) {
+      setError("Please add a short work description (at least 12 characters).");
+      return;
+    }
+
+    if (state.isGithubWork && fileUrl.length === 0) {
+      setError("GitHub URL is required when this milestone includes GitHub work.");
+      return;
+    }
+
+    if (fileUrl.length > 0 && state.isGithubWork && !isGithubUrl(fileUrl)) {
+      setError("Please provide a valid github.com URL for GitHub work.");
       return;
     }
 
@@ -320,11 +320,10 @@ export default function DashboardProjectDetailPage() {
     setError(null);
 
     try {
-      const state = milestoneForms[milestoneId] ?? { fileUrl: "", notes: "" };
       await createMilestoneSubmissionRequest(token, projectId, milestoneId, {
-        kind: "FINAL",
-        fileUrl: state.fileUrl || undefined,
-        notes: state.notes || undefined,
+        kind: submissionKind,
+        fileUrl: fileUrl || undefined,
+        notes: notes || undefined,
       });
 
       await loadProject();
@@ -350,7 +349,16 @@ export default function DashboardProjectDetailPage() {
     setError(null);
 
     try {
-      const report = await rateSubmissionRequest(token, submissionId, value);
+      const comment = (feedbackInputs[submissionId] ?? "").trim();
+      const report = await rateSubmissionRequest(token, submissionId, value, {
+        comment: comment.length > 0 ? comment : undefined,
+        rubric: {
+          completeness: value,
+          quality: value,
+          communication: value,
+          requirementAlignment: value,
+        },
+      });
       setValidationResult(report);
 
       await loadProject();
@@ -572,7 +580,7 @@ export default function DashboardProjectDetailPage() {
         </div>
       </Card>
 
-      {canAssign ? (
+      {user?.role === "CLIENT" ? (
         <Card>
           <h3 className="text-lg font-semibold">Assign Freelancer</h3>
           {applicants.length > 0 ? (
@@ -582,6 +590,7 @@ export default function DashboardProjectDetailPage() {
                 <div key={application.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
                   <div>
                     <p className="font-medium text-[#121212]">{application.freelancer?.name}</p>
+                    <p className="text-xs text-[#4b4b4b]">Application Status: {String(application.status ?? "PENDING")}</p>
                     <p className="text-xs text-[#4b4b4b]">Rating {application.freelancer?.rating} | Trust {application.freelancer?.trustScore}</p>
                     <p className="text-xs text-[#4b4b4b]">Fit score {applicantFitScore(application)}</p>
                     {application.message ? (
@@ -599,7 +608,14 @@ export default function DashboardProjectDetailPage() {
                     <Button asChild variant="secondary" className="h-8 px-3 text-xs">
                       <Link href={`/dashboard/chat/${project.id}?applicationId=${application.id}`}>Chat Applicant</Link>
                     </Button>
-                    <Button onClick={() => void onSelectApplicant(application.id)} disabled={saving || Boolean(project.freelancer)}>
+                    <Button
+                      onClick={() => void onSelectApplicant(application.id)}
+                      disabled={
+                        saving ||
+                        Boolean(project.freelancer) ||
+                        String(application.status ?? "").toUpperCase() === "SELECTED"
+                      }
+                    >
                       {saving ? "Selecting..." : "Select Applicant"}
                     </Button>
                   </div>
@@ -608,19 +624,11 @@ export default function DashboardProjectDetailPage() {
             </div>
           ) : null}
 
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <Select value={selectedFreelancerId} onChange={(event) => setSelectedFreelancerId(event.target.value)}>
-              <option value="">Select freelancer</option>
-              {freelancers.map((freelancer) => (
-                <option key={freelancer.id} value={freelancer.id}>
-                  {freelancer.name} (rating {freelancer.rating})
-                </option>
-              ))}
-            </Select>
-            <Button onClick={onAssignFreelancer} disabled={saving || !selectedFreelancerId}>
-              {saving ? "Assigning..." : "Assign Freelancer"}
-            </Button>
-          </div>
+          {applicants.length === 0 ? (
+            <p className="mt-3 text-sm text-[#4b4b4b]">
+              No applicants yet. Freelancers must apply before you can select one.
+            </p>
+          ) : null}
         </Card>
       ) : null}
 
@@ -694,47 +702,115 @@ export default function DashboardProjectDetailPage() {
               </div>
 
               {canSubmit ? (
-                <form onSubmit={(event) => onSubmitMilestone(event, milestone.id)} className="mt-3 space-y-2">
-                  <Input
-                    type="url"
-                    placeholder="Submission file URL"
-                    value={milestoneForms[milestone.id]?.fileUrl ?? ""}
-                    onChange={(event) =>
-                      setMilestoneForms((prev) => ({
-                        ...prev,
-                        [milestone.id]: {
-                          ...(prev[milestone.id] ?? { fileUrl: "", notes: "" }),
-                          fileUrl: event.target.value,
-                        },
-                      }))
-                    }
-                  />
-                  <Textarea
-                    rows={3}
-                    placeholder="Submission notes"
-                    value={milestoneForms[milestone.id]?.notes ?? ""}
-                    onChange={(event) =>
-                      setMilestoneForms((prev) => ({
-                        ...prev,
-                        [milestone.id]: {
-                          ...(prev[milestone.id] ?? { fileUrl: "", notes: "" }),
-                          notes: event.target.value,
-                        },
-                      }))
-                    }
-                  />
+                <div className="mt-3 space-y-3 border-2 border-[#121212] bg-[linear-gradient(135deg,#fff3d1,#dce8ff)] p-4">
+                  <div>
+                    <p className="text-sm font-semibold text-[#121212]">Submit Work</p>
+                    <p className="text-xs text-[#4b4b4b]">
+                      Add what you built, include GitHub URL when relevant, then save draft or submit final.
+                    </p>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-xs font-semibold text-[#121212]">
+                    <input
+                      type="checkbox"
+                      checked={milestoneForms[milestone.id]?.isGithubWork ?? false}
+                      onChange={(event) =>
+                        setMilestoneForms((prev) => ({
+                          ...prev,
+                          [milestone.id]: {
+                            ...(prev[milestone.id] ?? { fileUrl: "", notes: "", isGithubWork: false }),
+                            isGithubWork: event.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    This milestone includes GitHub work
+                  </label>
+
+                  <div>
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[#3f3f3f]">GitHub URL</p>
+                    <Input
+                      type="url"
+                      placeholder="https://github.com/org/repo/pull/123"
+                      value={milestoneForms[milestone.id]?.fileUrl ?? ""}
+                      onChange={(event) =>
+                        setMilestoneForms((prev) => ({
+                          ...prev,
+                          [milestone.id]: {
+                            ...(prev[milestone.id] ?? { fileUrl: "", notes: "", isGithubWork: false }),
+                            fileUrl: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[#3f3f3f]">Work Description</p>
+                    <Textarea
+                      rows={4}
+                      placeholder="Explain what you delivered, test coverage, and anything the client should review first."
+                      value={milestoneForms[milestone.id]?.notes ?? ""}
+                      onChange={(event) =>
+                        setMilestoneForms((prev) => ({
+                          ...prev,
+                          [milestone.id]: {
+                            ...(prev[milestone.id] ?? { fileUrl: "", notes: "", isGithubWork: false }),
+                            notes: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+
                   <div className="flex flex-wrap gap-2">
-                    <Button type="submit" variant="secondary" disabled={saving}>
-                      Submit Work
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={saving}
+                      onClick={() => void onSubmitMilestone(milestone.id, "DRAFT")}
+                    >
+                      {saving ? "Saving..." : "Save Draft"}
+                    </Button>
+                    <Button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void onSubmitMilestone(milestone.id, "FINAL")}
+                    >
+                      {saving ? "Submitting..." : "Submit Work"}
                     </Button>
                   </div>
-                </form>
+                </div>
+              ) : null}
+
+              {user?.role === "FREELANCER" && latestSubmission ? (
+                <div className="mt-3 space-y-2 rounded-lg border border-[#121212] bg-[#f5f5f5] p-3">
+                  <p className="text-xs font-semibold text-[#121212]">Your Latest Submission</p>
+                  <p className="text-xs text-[#4b4b4b]">
+                    Status: {latestSubmission.status}
+                    {latestSubmission.stage ? ` | stage: ${latestSubmission.stage}` : ""}
+                    {latestSubmission.reviewGateStatus ? ` | gate: ${latestSubmission.reviewGateStatus}` : ""}
+                  </p>
+                  {latestSubmission.fileUrl ? (
+                    <p className="text-xs text-[#4b4b4b]">
+                      GitHub / Artifact URL:{" "}
+                      <a className="text-[#1040c0] underline" href={latestSubmission.fileUrl} target="_blank" rel="noreferrer">
+                        Open Link
+                      </a>
+                    </p>
+                  ) : null}
+                  {latestSubmission.notes ? (
+                    <p className="text-xs text-[#4b4b4b]">Description: {latestSubmission.notes}</p>
+                  ) : null}
+                </div>
               ) : null}
 
               {user?.role === "CLIENT" && latestSubmission ? (
                 <div className="mt-3 space-y-2 rounded-lg border border-[#121212] bg-[#f5f5f5] p-3">
                   <p className="text-xs text-[#4b4b4b]">
                     Latest submission status: {latestSubmission.status}
+                    {latestSubmission.stage ? ` | stage: ${latestSubmission.stage}` : ""}
+                    {latestSubmission.reviewGateStatus ? ` | gate: ${latestSubmission.reviewGateStatus}` : ""}
                   </p>
                   {latestSubmission.fileUrl ? (
                     <p className="text-xs text-[#4b4b4b]">
@@ -743,6 +819,9 @@ export default function DashboardProjectDetailPage() {
                   ) : null}
                   {latestSubmission.notes ? (
                     <p className="text-xs text-[#4b4b4b]">Notes: {latestSubmission.notes}</p>
+                  ) : null}
+                  {latestSubmission.feedbackSummary?.client ? (
+                    <p className="text-xs text-[#4b4b4b]">Coverage summary: {latestSubmission.feedbackSummary.client}</p>
                   ) : null}
                   <Textarea
                     rows={2}

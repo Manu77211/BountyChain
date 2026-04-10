@@ -3,7 +3,13 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { flagSubmissionScoreRequest, getSubmissionRequest, openDisputeRequest } from "../../../lib/api";
+import {
+  createSubmissionReviewCommentRequest,
+  flagSubmissionScoreRequest,
+  getSubmissionRequest,
+  openDisputeRequest,
+  submitSubmissionReviewDecisionRequest,
+} from "../../../lib/api";
 import { useRealtimeChannel } from "../../../lib/realtime-client";
 import { AppShell } from "../../../src/components/layout/AppShell";
 import { Protected } from "../../../components/protected";
@@ -22,6 +28,11 @@ type SubmissionDetail = {
     final_score: number | null;
     score_finalized_at: string | null;
     client_flagged_at: string | null;
+    stage?: string;
+    review_gate_status?: string;
+    review_window_ends_at?: string | null;
+    approved_for_payout_at?: string | null;
+    last_client_comment?: string | null;
   };
   bounty: {
     id: string;
@@ -42,6 +53,24 @@ type SubmissionDetail = {
     dispute_type: string;
     raised_at: string;
   }>;
+  review_comments?: Array<{
+    id: string;
+    content: string;
+    comment_type: string;
+    author_name: string;
+    created_at: string;
+    parent_comment_id?: string | null;
+  }>;
+  feedback_reports?: Array<{
+    id: string;
+    client_summary: string;
+    freelancer_summary: string;
+    implemented_items: string[];
+    missing_items: string[];
+    freelancer_suggestions: string[];
+    client_comment?: string | null;
+    created_at: string;
+  }>;
 };
 
 export default function SubmissionDetailPage() {
@@ -56,6 +85,11 @@ export default function SubmissionDetailPage() {
   const [openingDispute, setOpeningDispute] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
   const [disputeType, setDisputeType] = useState<"score_unfair" | "quality_low" | "requirement_mismatch" | "fraud" | "non_delivery">("score_unfair");
+  const [reviewComment, setReviewComment] = useState("");
+  const [reviewDecision, setReviewDecision] = useState<"approve" | "request_changes" | "reject">("request_changes");
+  const [decisionComment, setDecisionComment] = useState("");
+  const [postingReviewComment, setPostingReviewComment] = useState(false);
+  const [submittingDecision, setSubmittingDecision] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -142,6 +176,63 @@ export default function SubmissionDetailPage() {
     }
   }
 
+  async function onPostReviewComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !submissionId) {
+      return;
+    }
+
+    const content = reviewComment.trim();
+    if (content.length < 2) {
+      setError("Review comment must have at least 2 characters.");
+      return;
+    }
+
+    setPostingReviewComment(true);
+    setError(null);
+    try {
+      await createSubmissionReviewCommentRequest(token, submissionId, {
+        content,
+        commentType: "note",
+        visibility: "both",
+      });
+      setReviewComment("");
+      await load();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setPostingReviewComment(false);
+    }
+  }
+
+  async function onSubmitReviewDecision(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !submissionId) {
+      return;
+    }
+
+    const comment = decisionComment.trim();
+    if (comment.length < 2) {
+      setError("Decision comment must have at least 2 characters.");
+      return;
+    }
+
+    setSubmittingDecision(true);
+    setError(null);
+    try {
+      await submitSubmissionReviewDecisionRequest(token, submissionId, {
+        decision: reviewDecision,
+        comment,
+      });
+      setDecisionComment("");
+      await load();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setSubmittingDecision(false);
+    }
+  }
+
   return (
     <Protected>
       <AppShell>
@@ -194,6 +285,83 @@ export default function SubmissionDetailPage() {
                 {detail.payout.mismatch_flagged ? (
                   <p className="mt-3 text-sm text-[#8f1515]">Payout mismatch was flagged and queued for admin review.</p>
                 ) : null}
+              </Card>
+
+              <Card>
+                <h3 className="text-lg font-semibold">Review Workflow</h3>
+                <div className="mt-3 grid gap-2 text-sm text-[#4b4b4b] md:grid-cols-2">
+                  <p>Submission Stage: {detail.submission.stage ?? "n/a"}</p>
+                  <p>Review Gate: {detail.submission.review_gate_status ?? "none"}</p>
+                  <p>Review Window Ends: {detail.submission.review_window_ends_at ? new Date(detail.submission.review_window_ends_at).toLocaleString() : "n/a"}</p>
+                  <p>Payout Approved At: {detail.submission.approved_for_payout_at ? new Date(detail.submission.approved_for_payout_at).toLocaleString() : "n/a"}</p>
+                </div>
+
+                {detail.feedback_reports?.[0] ? (
+                  <div className="mt-4 rounded-xl border border-[#121212] bg-[#f5f5f5] p-3 text-sm">
+                    <p className="font-medium text-[#121212]">Latest Comparison Summary</p>
+                    <p className="mt-1 text-[#4b4b4b]">For client: {detail.feedback_reports[0].client_summary}</p>
+                    <p className="mt-1 text-[#4b4b4b]">For freelancer: {detail.feedback_reports[0].freelancer_summary}</p>
+                    {(detail.feedback_reports[0].implemented_items ?? []).length > 0 ? (
+                      <p className="mt-2 text-[#4b4b4b]">Implemented: {(detail.feedback_reports[0].implemented_items ?? []).join(", ")}</p>
+                    ) : null}
+                    {(detail.feedback_reports[0].missing_items ?? []).length > 0 ? (
+                      <p className="mt-2 text-[#8a5a00]">Missing: {(detail.feedback_reports[0].missing_items ?? []).join(", ")}</p>
+                    ) : null}
+                    {(detail.feedback_reports[0].freelancer_suggestions ?? []).length > 0 ? (
+                      <p className="mt-2 text-[#4b4b4b]">Suggestions: {(detail.feedback_reports[0].freelancer_suggestions ?? []).join(" | ")}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="mt-4 space-y-2">
+                  <p className="text-sm font-semibold">Review Comments</p>
+                  {detail.review_comments?.map((comment) => (
+                    <div key={comment.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
+                      <p className="text-xs text-[#4b4b4b]">{comment.author_name} • {new Date(comment.created_at).toLocaleString()} • {comment.comment_type}</p>
+                      <p className="mt-1 text-sm text-[#121212]">{comment.content}</p>
+                    </div>
+                  ))}
+                  {(detail.review_comments?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-[#4b4b4b]">No review comments yet.</p>
+                  ) : null}
+                </div>
+
+                <form className="mt-4 space-y-2 border-t border-[#121212] pt-4" onSubmit={onPostReviewComment}>
+                  <p className="text-sm font-semibold">Add Review Comment</p>
+                  <Input
+                    value={reviewComment}
+                    onChange={(event) => setReviewComment(event.target.value)}
+                    placeholder="Share update, clarification, or feedback"
+                    minLength={2}
+                    required
+                  />
+                  <Button type="submit" disabled={postingReviewComment}>
+                    {postingReviewComment ? "Posting..." : "Post Comment"}
+                  </Button>
+                </form>
+
+                <form className="mt-4 space-y-2 border-t border-[#121212] pt-4" onSubmit={onSubmitReviewDecision}>
+                  <p className="text-sm font-semibold">Client Decision</p>
+                  <select
+                    className="w-full rounded-none border-2 border-[#121212] bg-white px-3 py-2.5 text-sm"
+                    value={reviewDecision}
+                    onChange={(event) => setReviewDecision(event.target.value as "approve" | "request_changes" | "reject")}
+                  >
+                    <option value="approve">Approve</option>
+                    <option value="request_changes">Request Changes</option>
+                    <option value="reject">Reject</option>
+                  </select>
+                  <Input
+                    value={decisionComment}
+                    onChange={(event) => setDecisionComment(event.target.value)}
+                    placeholder="Add decision comment"
+                    minLength={2}
+                    required
+                  />
+                  <Button type="submit" disabled={submittingDecision}>
+                    {submittingDecision ? "Submitting..." : "Submit Decision"}
+                  </Button>
+                </form>
               </Card>
 
               <Card>

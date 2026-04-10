@@ -69,6 +69,7 @@ export default function DashboardApplicationsPage() {
   const [applications, setApplications] = useState<BountyApplication[]>([]);
   const [clientBounties, setClientBounties] = useState<ClientBounty[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
+  const [clientStatusFilter, setClientStatusFilter] = useState("");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -117,8 +118,11 @@ export default function DashboardApplicationsPage() {
   }, [applications, query, statusFilter]);
 
   const filteredClientBounties = useMemo(() => {
-    return filterByText(clientBounties, (entry) => entry.title, query);
-  }, [clientBounties, query]);
+    const byStatus = clientStatusFilter
+      ? clientBounties.filter((entry) => String(entry.status ?? "").toUpperCase() === clientStatusFilter)
+      : clientBounties;
+    return filterByText(byStatus, (entry) => entry.title, query);
+  }, [clientBounties, clientStatusFilter, query]);
 
   return (
     <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
@@ -146,7 +150,14 @@ export default function DashboardApplicationsPage() {
               <option value="REJECTED">Rejected</option>
             </Select>
           ) : (
-            <div />
+            <Select value={clientStatusFilter} onChange={(event) => setClientStatusFilter(event.target.value)}>
+              <option value="">All statuses</option>
+              <option value="DRAFT">Draft</option>
+              <option value="OPEN">Open</option>
+              <option value="IN_PROGRESS">Assigned (In Progress)</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="DISPUTED">Disputed</option>
+            </Select>
           )}
           <Button variant="secondary" onClick={() => void load()}>Refresh</Button>
         </div>
@@ -195,6 +206,11 @@ export default function DashboardApplicationsPage() {
                         {String(entry.application.status).toUpperCase() === "SELECTED" ? (
                           <Button asChild className="h-8 px-3 text-xs">
                             <Link href={`/dashboard/chat/${entry.project.id}`}>Open Chat</Link>
+                          </Button>
+                        ) : null}
+                        {String(entry.application.status).toUpperCase() === "SELECTED" ? (
+                          <Button asChild className="h-8 px-3 text-xs">
+                            <Link href={`/dashboard/projects/${entry.project.id}`}>Submit Work</Link>
                           </Button>
                         ) : null}
                       </div>
