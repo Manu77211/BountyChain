@@ -1,11 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import { CheckCircle2, Loader2, ShieldCheck, Wallet, Zap, PlugZap, AlertTriangle } from "lucide-react";
 import { useWallet } from "../../src/hooks/useWallet";
-
-export const dynamic = "force-dynamic";
 
 function isAlgoSignerInstalled() {
   if (typeof window === "undefined") {
@@ -14,7 +12,7 @@ function isAlgoSignerInstalled() {
   return Boolean((window as unknown as { AlgoSigner?: unknown }).AlgoSigner);
 }
 
-export default function ConnectPage() {
+function ConnectContent() {
   const {
     connectPera,
     connectWalletConnect,
@@ -198,5 +196,23 @@ export default function ConnectPage() {
         </section>
       </div>
     </main>
+  );
+}
+
+function ConnectFallback() {
+  return (
+    <main className="min-h-screen bg-surface-0">
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <p className="text-sm text-text-tertiary">Loading wallet connection...</p>
+      </div>
+    </main>
+  );
+}
+
+export default function ConnectPage() {
+  return (
+    <Suspense fallback={<ConnectFallback />}>
+      <ConnectContent />
+    </Suspense>
   );
 }

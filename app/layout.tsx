@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { connection } from "next/server";
 import { PRODUCT_NAME } from "../lib/project-config";
 import "./globals.css";
 
@@ -19,11 +20,13 @@ export const metadata: Metadata = {
     "BountyEscrow AI coordinates Algorand escrow, CI/CD + AI validation, and policy-safe auto payout.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  await connection();
+
   return (
     <html
       lang="en"

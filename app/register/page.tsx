@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "../../store/auth-store";
 import { AuthShell } from "../../components/ui/auth-shell";
@@ -29,7 +29,7 @@ function getInitialRoleFromQuery(): "CLIENT" | "FREELANCER" {
   return "CLIENT";
 }
 
-export default function RegisterPage() {
+function RegisterContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { register, loginWithPera, loading, error, token, user, hydrate } = useAuthStore();
@@ -110,5 +110,32 @@ export default function RegisterPage() {
         </p>
       </Card>
     </AuthShell>
+  );
+}
+
+function RegisterFallback() {
+  return (
+    <AuthShell
+      title="Register"
+      subtitle="Create your profile as Client or Freelancer and enter the bounty escrow execution workflow."
+      sideNote={
+        <div className="space-y-3">
+          <p>Contract-first onboarding with clear validation, sanctions, and payout policies.</p>
+          <p>Choose your role first; the dashboard and available actions are tailored after sign-up.</p>
+        </div>
+      }
+    >
+      <Card className="h-full border-[#121212] bg-[#fff9e8] p-7 shadow-[8px_8px_0_#121212]">
+        <p className="text-sm text-[#4b4b4b]">Loading registration...</p>
+      </Card>
+    </AuthShell>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<RegisterFallback />}>
+      <RegisterContent />
+    </Suspense>
   );
 }
