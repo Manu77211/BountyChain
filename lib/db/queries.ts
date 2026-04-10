@@ -12,6 +12,96 @@ import type {
 
 const NOT_DELETED_BOUNTY = "deleted_at IS NULL";
 const NOT_DELETED_USER = "deleted_at IS NULL";
+const BOUNTY_COLUMNS = [
+  "id",
+  "creator_id",
+  "title",
+  "description",
+  "acceptance_criteria",
+  "repo_url",
+  "target_branch",
+  "allowed_languages",
+  "total_amount",
+  "escrow_contract_address",
+  "escrow_locked",
+  "status",
+  "scoring_mode",
+  "ai_score_threshold",
+  "max_freelancers",
+  "deadline",
+  "grace_period_minutes",
+  "extension_count",
+  "idempotency_key",
+  "created_at",
+  "updated_at",
+  "deleted_at",
+].join(", ");
+
+const USER_COLUMNS = [
+  "id",
+  "email",
+  "wallet_address",
+  "role",
+  "reputation_score",
+  "is_sanctions_flagged",
+  "is_banned",
+  "created_at",
+  "updated_at",
+  "deleted_at",
+].join(", ");
+
+const MILESTONE_COLUMNS = [
+  "id",
+  "bounty_id",
+  "title",
+  "description",
+  "payout_amount",
+  "order_index",
+  "status",
+  "payout_tx_id",
+  "created_at",
+  "updated_at",
+].join(", ");
+
+const SUBMISSION_COLUMNS = [
+  "id",
+  "bounty_id",
+  "freelancer_id",
+  "github_pr_url",
+  "github_branch",
+  "github_repo_id",
+  "head_sha",
+  "ci_status",
+  "ci_run_id",
+  "ci_retrigger_count",
+  "skipped_test_count",
+  "total_test_count",
+  "ai_score",
+  "ai_score_raw",
+  "ai_integrity_flag",
+  "ai_language_mismatch_flag",
+  "final_score",
+  "evidence_source",
+  "status",
+  "scoring_idempotency_key",
+  "submission_received_at",
+  "created_at",
+  "updated_at",
+].join(", ");
+
+const DISPUTE_COLUMNS = [
+  "id",
+  "submission_id",
+  "raised_by",
+  "reason",
+  "status",
+  "outcome",
+  "raised_at",
+  "resolved_at",
+  "escalated_at",
+  "created_at",
+  "updated_at",
+].join(", ");
 
 export interface NewMilestoneInput {
   title: string;
@@ -36,7 +126,7 @@ export interface NewBountyInput {
 
 export async function listOpenBounties(limit = 50): Promise<BountyRow[]> {
   const sql = `
-    SELECT *
+    SELECT ${BOUNTY_COLUMNS}
     FROM bounties
     WHERE ${NOT_DELETED_BOUNTY}
       AND status = 'open'
@@ -49,7 +139,7 @@ export async function listOpenBounties(limit = 50): Promise<BountyRow[]> {
 
 export async function getBountyById(id: string): Promise<BountyRow | null> {
   const sql = `
-    SELECT *
+    SELECT ${BOUNTY_COLUMNS}
     FROM bounties
     WHERE id = $1
       AND ${NOT_DELETED_BOUNTY}
@@ -61,7 +151,7 @@ export async function getBountyById(id: string): Promise<BountyRow | null> {
 
 export async function getActiveUserById(id: string): Promise<UserRow | null> {
   const sql = `
-    SELECT *
+    SELECT ${USER_COLUMNS}
     FROM users
     WHERE id = $1
       AND ${NOT_DELETED_USER}
@@ -73,7 +163,7 @@ export async function getActiveUserById(id: string): Promise<UserRow | null> {
 
 export async function getActiveUserByWallet(walletAddress: string) {
   const sql = `
-    SELECT *
+    SELECT ${USER_COLUMNS}
     FROM users
     WHERE wallet_address = $1
       AND ${NOT_DELETED_USER}
@@ -120,7 +210,7 @@ export async function acceptBountyWithRowLock(input: AcceptBountyInput) {
         submission_received_at
       )
       VALUES ($1, $2, $3, $4, $5, $6, 'submitted', NOW())
-      RETURNING *
+      RETURNING ${SUBMISSION_COLUMNS}
     `;
 
     const params = [
@@ -181,7 +271,7 @@ async function insertBounty(client: PoolClient, input: NewBountyInput) {
       status
     )
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'open')
-    RETURNING *
+    RETURNING ${BOUNTY_COLUMNS}
   `;
 
   const params = [
@@ -218,7 +308,7 @@ async function insertMilestones(
         status
       )
       VALUES ($1, $2, $3, $4, $5, 'pending')
-      RETURNING *
+      RETURNING ${MILESTONE_COLUMNS}
     `;
 
     const params = [
@@ -255,7 +345,7 @@ async function insertDispute(client: PoolClient, input: CreateDisputeInput) {
   const sql = `
     INSERT INTO disputes (submission_id, raised_by, reason, status, raised_at)
     VALUES ($1, $2, $3, 'open', NOW())
-    RETURNING *
+    RETURNING ${DISPUTE_COLUMNS}
   `;
   const params = [input.submissionId, input.raisedBy, input.reason];
   const result = await client.query<DisputeRow>(sql, params);

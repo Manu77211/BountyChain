@@ -41,9 +41,9 @@ export function MarketingHero() {
             Post bounties, lock funds in Algorand escrow, validate with GitHub CI/CD plus GROQ scoring, and release only when policy checks pass.
           </p>
 
-              { value: "CI + AI", label: "Validation Gates" },
-              { value: "Inngest", label: "Retry Orchestration" },
-              { value: "ARC-4", label: "Escrow Contract" },
+          <div className="flex flex-wrap gap-4">
+            <Link
+              href="/register?role=CLIENT"
               className="flex items-center gap-2 px-7 py-4 font-black uppercase tracking-wider text-white transition-all duration-200 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
               style={{
                 backgroundColor: C.red,

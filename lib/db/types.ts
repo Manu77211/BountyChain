@@ -4,10 +4,14 @@ export type BountyStatus =
   | "draft"
   | "open"
   | "in_progress"
+  | "accepted"
   | "completed"
   | "expired"
+  | "expired_no_submission"
+  | "expired_all_failed"
   | "cancelled"
-  | "disputed";
+  | "disputed"
+  | "pending_escrow";
 
 export type ScoringMode = "ai_only" | "ci_only" | "hybrid";
 export type MilestoneStatus = "pending" | "unlocked" | "paid" | "failed";
@@ -18,14 +22,18 @@ export type CiStatus =
   | "passed"
   | "failed"
   | "skipped_abuse"
-  | "timeout";
+  | "timeout"
+  | "ci_not_found";
 
 export type SubmissionStatus =
   | "draft"
   | "submitted"
+  | "in_progress"
   | "validating"
+  | "awaiting_ci"
   | "passed"
   | "failed"
+  | "expired_incomplete"
   | "disputed"
   | "expired"
   | "abandoned";
@@ -60,6 +68,9 @@ export interface BountyRow {
   allowed_languages: string[];
   total_amount: string;
   escrow_contract_address: string | null;
+  payout_asset_id?: string | null;
+  payout_asset_code?: string;
+  contributor_splits?: Array<Record<string, unknown>>;
   escrow_locked: boolean;
   status: BountyStatus;
   scoring_mode: ScoringMode;
@@ -94,8 +105,10 @@ export interface SubmissionRow {
   github_pr_url: string;
   github_branch: string;
   github_repo_id: string;
+  head_sha: string | null;
   ci_status: CiStatus;
   ci_run_id: string | null;
+  ci_retrigger_count: number;
   skipped_test_count: number;
   total_test_count: number;
   ai_score: number | null;
@@ -103,8 +116,16 @@ export interface SubmissionRow {
   ai_integrity_flag: boolean;
   ai_language_mismatch_flag: boolean;
   final_score: number | null;
+  evidence_source: "live" | "cache";
   status: SubmissionStatus;
   scoring_idempotency_key: string;
+  ai_scoring_in_progress?: boolean;
+  ai_scoring_status?: "idle" | "in_progress" | "completed" | "timeout" | "parse_failed" | "manual_review";
+  ai_scoring_last_event_hash?: string | null;
+  ai_scoring_attempts?: number;
+  score_finalized_at?: Date | null;
+  client_rating_stars?: number | null;
+  client_flagged_at?: Date | null;
   submission_received_at: Date;
   created_at: Date;
   updated_at: Date;
@@ -121,6 +142,9 @@ export interface PayoutRow {
   status: PayoutStatus;
   retry_count: number;
   mismatch_flagged: boolean;
+  hold_reason?: string | null;
+  split_share_key?: string | null;
+  payout_group_id?: string | null;
   created_at: Date;
   updated_at: Date;
 }

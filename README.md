@@ -69,7 +69,32 @@ If omitted, frontend falls back to `http://localhost:4000/api`.
 ```bash
 npm install
 npm run dev
+npm run api:dev
 ```
+
+## Express Backend (TypeScript)
+
+Backend source lives in `src/` with this structure:
+
+- `src/middleware`: auth, validation, rate limit, sanctions, error handling
+- `src/routes`: auth, bounties, users
+- `src/services`: Algorand and wallet helpers
+- `src/schemas`: Zod request schemas
+- `src/types`: Express request context typing
+
+Key API routes:
+
+- `POST /api/auth/wallet-login`
+- `POST /api/auth/refresh`
+- `POST /api/auth/disconnect`
+- `POST /api/bounties`
+- `POST /api/bounties/:id/fund`
+- `GET /api/bounties`
+- `GET /api/bounties/:id`
+- `PATCH /api/bounties/:id/extend-deadline`
+- `DELETE /api/bounties/:id`
+- `POST /api/bounties/:id/accept`
+- `GET /api/users/me`
 
 ## CI
 
