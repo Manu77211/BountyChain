@@ -18,9 +18,25 @@ export const freelancerRecommendationBodySchema = z.object({
 });
 
 export const freelancerProjectSuggestionBodySchema = z.object({
-  title: z.string().trim().min(3).max(120).optional(),
+  title: z.preprocess(
+    (value) => {
+      if (typeof value === "string" && value.trim().length === 0) {
+        return undefined;
+      }
+      return value;
+    },
+    z.string().trim().min(3).max(120).optional(),
+  ),
   description: z.string().trim().min(12).max(3000),
-  acceptance_criteria: z.string().trim().max(4000).optional(),
+  acceptance_criteria: z.preprocess(
+    (value) => {
+      if (typeof value === "string" && value.trim().length === 0) {
+        return undefined;
+      }
+      return value;
+    },
+    z.string().trim().max(4000).optional(),
+  ),
   allowed_languages: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
 });
 

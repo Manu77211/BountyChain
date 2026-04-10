@@ -19,10 +19,11 @@ export const notificationJob = inngest.createFunction(
           FROM notifications
           WHERE user_id = $1
             AND event_type = $2
+            AND payload = $3::jsonb
             AND created_at >= NOW() - INTERVAL '60 seconds'
           LIMIT 1
         `,
-        [event.data.user_id, event.data.event_type],
+        [event.data.user_id, event.data.event_type, JSON.stringify(event.data.payload ?? {})],
       );
 
       return (existing.rowCount ?? 0) > 0;

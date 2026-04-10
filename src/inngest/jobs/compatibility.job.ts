@@ -193,12 +193,24 @@ export const sendNotificationCompatJob = inngest.createFunction(
             ? ["in_app"]
             : ["email", "in_app"];
 
+      const recipientId = event.data.user_id ?? event.data.recipients?.[0];
+      if (!recipientId || !event.data.event_type) {
+        return {
+          forwarded: false,
+          reason: "missing_recipient_or_event_type",
+        };
+      }
+
+      const normalizedChannels = channels
+        .flatMap((item) => (item === "both" ? ["email", "in_app"] : [item]))
+        .filter((item): item is "email" | "in_app" => item === "email" || item === "in_app");
+
     await step.sendEvent("forward-notification-compat-event", {
       name: "notification/send",
       data: {
-        user_id: event.data.user_id ?? event.data.recipients?.[0] ?? "",
+          user_id: recipientId,
         event_type: event.data.event_type,
-        channels: channels.map((item) => (item === "both" ? "in_app" : item)).filter((item) => item === "email" || item === "in_app"),
+          channels: normalizedChannels.length > 0 ? normalizedChannels : ["in_app"],
         payload: (event.data.payload ?? {}) as Record<string, unknown>,
       },
     });

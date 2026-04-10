@@ -383,10 +383,12 @@ export default function CreateBountyPage() {
     setDescriptionSuggestionMessage(null);
 
     try {
+      const title = form.getValues("title").trim();
+      const acceptanceCriteria = form.getValues("acceptanceCriteria").trim();
       const response = await suggestProjectDescriptionRequest(token, {
-        title: form.getValues("title").trim(),
+        title: title.length >= 3 ? title : undefined,
         description,
-        acceptance_criteria: form.getValues("acceptanceCriteria").trim(),
+        acceptance_criteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : undefined,
         allowed_languages: form.getValues("allowedLanguages").map((value) => value.toLowerCase()),
       });
 
