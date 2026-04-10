@@ -1,13 +1,16 @@
 import { z } from "zod";
 
+const isHackathonMode = process.env.HACKATHON_MODE === "true";
+const minimumLongText = isHackathonMode ? 1 : 10;
+
 const uuidParamSchema = z.object({
   id: z.string().uuid("id must be a UUID"),
 });
 
 export const createBountySchema = z.object({
   title: z.string().trim().min(3),
-  description: z.string().trim().min(10),
-  acceptance_criteria: z.string().trim().min(10),
+  description: z.string().trim().min(minimumLongText),
+  acceptance_criteria: z.string().trim().min(minimumLongText),
   repo_url: z.string().url().regex(/^https:\/\/github\.com\/.+\/.+$/, "repo_url must be a GitHub repository URL"),
   target_branch: z.string().trim().min(1).default("main"),
   allowed_languages: z.array(z.string().trim().min(1)).min(1),

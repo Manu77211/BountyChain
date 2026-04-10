@@ -7,11 +7,29 @@ import { AUTH_STORAGE_KEY, LEGACY_AUTH_STORAGE_KEY } from "../lib/project-config
 
 type User = AuthPayload["user"];
 
+function normalizeUserRole(user: User): User {
+  const rawRole = String(user.role ?? "").toUpperCase();
+  const normalizedRole =
+    rawRole === "CLIENT"
+      ? "CLIENT"
+      : rawRole === "ADMIN"
+        ? "ADMIN"
+        : rawRole === "ARBITRATOR"
+          ? "ARBITRATOR"
+          : "FREELANCER";
+  return {
+    ...user,
+    role: normalizedRole,
+  };
+}
+
 interface AuthState {
   token: string | null;
   user: User | null;
   loading: boolean;
   error: string | null;
+  setSession: (payload: AuthPayload) => void;
+  setUser: (user: User | null) => void;
   hydrate: () => void;
   register: (payload: {
     name: string;
@@ -29,9 +47,10 @@ interface AuthState {
 
 function persistAuthState(data: AuthPayload) {
   if (typeof window !== "undefined") {
+    const normalized = normalizeUserRole(data.user);
     window.localStorage.setItem(
       AUTH_STORAGE_KEY,
-      JSON.stringify({ token: data.token, user: data.user }),
+      JSON.stringify({ token: data.token, user: normalized }),
     );
   }
 }
@@ -45,6 +64,23 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   loading: false,
   error: null,
+  setSession: (payload) => {
+    const normalized = normalizeUserRole(payload.user);
+    persistAuthState({ ...payload, user: normalized });
+    set({ token: payload.token, user: normalized, error: null });
+  },
+  setUser: (user) => {
+    if (typeof window !== "undefined") {
+      const current = useAuthStore.getState();
+      if (current.token && user) {
+        window.localStorage.setItem(
+          AUTH_STORAGE_KEY,
+          JSON.stringify({ token: current.token, user: normalizeUserRole(user) }),
+        );
+      }
+    }
+    set({ user: user ? normalizeUserRole(user) : null });
+  },
   hydrate: () => {
     if (typeof window === "undefined") {
       return;
@@ -59,10 +95,14 @@ export const useAuthStore = create<AuthState>((set) => ({
 
     try {
       const parsed = JSON.parse(raw) as { token: string; user: User };
+      const normalizedUser = normalizeUserRole(parsed.user);
       // Migrate old storage key to keep existing sessions working after rename.
-      window.localStorage.setItem(AUTH_STORAGE_KEY, raw);
+      window.localStorage.setItem(
+        AUTH_STORAGE_KEY,
+        JSON.stringify({ token: parsed.token, user: normalizedUser }),
+      );
       window.localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
-      set({ token: parsed.token, user: parsed.user });
+      set({ token: parsed.token, user: normalizedUser });
     } catch {
       window.localStorage.removeItem(AUTH_STORAGE_KEY);
       window.localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
@@ -72,8 +112,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       const data = await registerRequest(payload);
+      const normalized = normalizeUserRole(data.user);
       persistAuthState(data);
-      set({ token: data.token, user: data.user, loading: false });
+      set({ token: data.token, user: normalized, loading: false });
     } catch (error) {
       set({ loading: false, error: (error as Error).message });
       throw error;
@@ -83,8 +124,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       const data = await loginRequest(payload);
+      const normalized = normalizeUserRole(data.user);
       persistAuthState(data);
-      set({ token: data.token, user: data.user, loading: false });
+      set({ token: data.token, user: normalized, loading: false });
     } catch (error) {
       set({ loading: false, error: (error as Error).message });
       throw error;
@@ -104,8 +146,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         role: role === "CLIENT" ? "client" : "freelancer",
       });
 
+      const normalized = normalizeUserRole(data.user);
       persistAuthState(data);
-      set({ token: data.token, user: data.user, loading: false });
+      set({ token: data.token, user: normalized, loading: false });
     } catch (error) {
       set({ loading: false, error: (error as Error).message });
       throw error;

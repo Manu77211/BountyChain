@@ -2,14 +2,26 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "../../store/auth-store";
 import { AuthShell } from "../../components/ui/auth-shell";
 import { Button, Card, Input } from "../../components/ui/primitives";
 
+function resolveDashboardRoute(role?: string) {
+  return String(role ?? "").toUpperCase() === "FREELANCER" ? "/dashboard/freelancers" : "/dashboard";
+}
+
+function resolveRedirectTarget(redirectParam: string | null, role?: string) {
+  if (redirectParam && redirectParam.startsWith("/")) {
+    return redirectParam;
+  }
+  return resolveDashboardRoute(role);
+}
+
 export default function LoginPage() {
   const router = useRouter();
-  const { login, loginWithPera, loading, error, token, hydrate } = useAuthStore();
+  const searchParams = useSearchParams();
+  const { login, loginWithPera, loading, error, token, user, hydrate } = useAuthStore();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [walletRole, setWalletRole] = useState<"CLIENT" | "FREELANCER">("CLIENT");
@@ -20,15 +32,14 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (token) {
-      router.replace("/dashboard");
+      router.replace(resolveRedirectTarget(searchParams.get("redirect"), user?.role));
     }
-  }, [token, router]);
+  }, [token, user?.role, router, searchParams]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
       await login({ email, password });
-      router.replace("/dashboard");
     } catch {
       // Error message is managed in the store.
     }
@@ -37,7 +48,6 @@ export default function LoginPage() {
   async function onLoginWithPera() {
     try {
       await loginWithPera(walletRole);
-      router.replace("/dashboard");
     } catch {
       // Error message is managed in the store.
     }

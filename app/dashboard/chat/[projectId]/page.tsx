@@ -84,7 +84,7 @@ export default function DashboardChatPage() {
     socket.on("connect", () => {
       socket.emit("project:join", currentProjectId, (ack: JoinAck) => {
         if (!ack.ok) {
-          setError(ack.message ?? "Failed to join project chat room");
+          setError(ack.message ?? "Failed to join bounty chat room");
         }
       });
     });

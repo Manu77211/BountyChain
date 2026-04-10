@@ -1,79 +1,97 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  applyToProjectRequest,
-  createProjectRequest,
-  deleteProjectRequest,
   discoverOpenProjectsRequest,
+  listMyProjectApplicationsRequest,
   listProjectsRequest,
 } from "../../../lib/api";
 import { useAuthStore } from "../../../store/auth-store";
-import {
-  Button,
-  Card,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  Input,
-  PageIntro,
-  Pill,
-  ProgressBar,
-  Textarea,
-} from "../../../components/ui/primitives";
+import { Button, Card, Input, PageIntro, Pill, Select } from "../../../components/ui/primitives";
 
-type MilestoneListItem = {
-  status: string;
-  amount?: number;
+type BountyApplication = {
+  application: {
+    id: string;
+    status: string;
+    message?: string;
+    proposedAmount?: number;
+    estimatedDays?: number;
+    createdAt?: string;
+  };
+  project: {
+    id: string;
+    title: string;
+    status: string;
+    client?: {
+      name?: string;
+    };
+    criteria?: {
+      deadline?: string;
+      totalAmountMicroAlgo?: number;
+    };
+  };
 };
 
-type ProjectApplicationPreview = {
-  id: string;
-};
-
-type ProjectListItem = {
+type ClientBounty = {
   id: string;
   title: string;
   status: string;
-  freelancer?: { name?: string } | null;
-  client?: { name?: string } | null;
-  milestones?: MilestoneListItem[];
-  applications?: ProjectApplicationPreview[];
-  _count?: { applications?: number };
+  _count?: {
+    applications?: number;
+  };
+  criteria?: {
+    deadline?: string;
+  };
 };
 
-export default function ProjectsPage() {
+type OpenBounty = {
+  id: string;
+  title: string;
+  status: string;
+  criteria?: {
+    totalAmountMicroAlgo?: number;
+    deadline?: string;
+  };
+  client?: {
+    name?: string;
+  };
+};
+
+function asDate(value?: string) {
+  if (!value) {
+    return "-";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function filterByText<T>(items: T[], readText: (item: T) => string, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return items;
+  }
+  return items.filter((item) => readText(item).toLowerCase().includes(normalized));
+}
+
+export default function DashboardApplicationsPage() {
   const { token, user, hydrate } = useAuthStore();
-  const [projects, setProjects] = useState<ProjectListItem[]>([]);
-  const [openProjects, setOpenProjects] = useState<ProjectListItem[]>([]);
+  const role = String(user?.role ?? "").toUpperCase();
+  const isFreelancer = role === "FREELANCER";
+
+  const [applications, setApplications] = useState<BountyApplication[]>([]);
+  const [openBounties, setOpenBounties] = useState<OpenBounty[]>([]);
+  const [clientBounties, setClientBounties] = useState<ClientBounty[]>([]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-
-  const [openCreate, setOpenCreate] = useState(false);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [workType, setWorkType] = useState<"STRUCTURED" | "CREATIVE">("STRUCTURED");
-  const [creating, setCreating] = useState(false);
-  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
-  const [applyingProjectId, setApplyingProjectId] = useState<string | null>(null);
-  const [proposalDrafts, setProposalDrafts] = useState<Record<string, {
-    message: string;
-    proposedAmount: string;
-    estimatedDays: string;
-    deliverables: string;
-  }>>({});
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
-  const loadProjects = useCallback(async () => {
+  const load = useCallback(async () => {
     if (!token) {
       return;
     }
@@ -82,366 +100,195 @@ export default function ProjectsPage() {
     setError(null);
 
     try {
-      const projectList = (await listProjectsRequest(token)) as ProjectListItem[];
-      setProjects(projectList);
-      if (user?.role === "FREELANCER") {
-        const discoverList = (await discoverOpenProjectsRequest(token)) as ProjectListItem[];
-        setOpenProjects(discoverList);
+      if (isFreelancer) {
+        const [applied, market] = await Promise.all([
+          listMyProjectApplicationsRequest(token),
+          discoverOpenProjectsRequest(token),
+        ]);
+
+        setApplications((applied as BountyApplication[]) ?? []);
+        setOpenBounties((market as OpenBounty[]) ?? []);
+        setClientBounties([]);
       } else {
-        setOpenProjects([]);
+        const data = await listProjectsRequest(token);
+        setClientBounties((data as ClientBounty[]) ?? []);
+        setApplications([]);
+        setOpenBounties([]);
       }
-    } catch (e) {
-      setError((e as Error).message);
+    } catch (requestError) {
+      setError((requestError as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [token, user?.role]);
+  }, [isFreelancer, token]);
 
   useEffect(() => {
-    void loadProjects();
-  }, [loadProjects]);
+    void load();
+  }, [load]);
 
-  const heading = useMemo(() => {
-    if (user?.role === "FREELANCER") {
-      return {
-        title: "My Bounties",
-        subtitle: "Track assigned bounty delivery pipelines and submit milestones for objective validation.",
-      };
-    }
+  const filteredApplications = useMemo(() => {
+    const byStatus = statusFilter
+      ? applications.filter(
+          (entry) => String(entry.application.status ?? "").toUpperCase() === statusFilter,
+        )
+      : applications;
 
-    return {
-      title: "Bounties",
-      subtitle: "Create bounties, assign freelancers, and monitor escrow and milestone progression.",
-    };
-  }, [user?.role]);
+    return filterByText(byStatus, (entry) => `${entry.project.title} ${entry.project.client?.name ?? ""}`, query);
+  }, [applications, query, statusFilter]);
 
-  async function onCreateProject(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const filteredClientBounties = useMemo(() => {
+    return filterByText(clientBounties, (entry) => entry.title, query);
+  }, [clientBounties, query]);
 
-    const cleanTitle = title.trim();
-    const cleanDescription = description.trim();
-
-    if (!token) {
-      setError("Please login again to create a bounty.");
-      return;
-    }
-
-    if (user?.role !== "CLIENT") {
-      setError("Only clients can create bounties.");
-      return;
-    }
-
-    if (cleanTitle.length < 3) {
-      setError("Title must be at least 3 characters.");
-      return;
-    }
-
-    if (cleanDescription.length < 10) {
-      setError("Description must be at least 10 characters.");
-      return;
-    }
-
-    setCreating(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      await createProjectRequest(token, {
-        title: cleanTitle,
-        description: cleanDescription,
-        workType,
-      });
-      setTitle("");
-      setDescription("");
-      setWorkType("STRUCTURED");
-      setOpenCreate(false);
-      await loadProjects();
-      setSuccess("Bounty created successfully.");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function onDeleteProject(projectId: string) {
-    if (!token) {
-      setError("Please login again to delete a bounty.");
-      return;
-    }
-
-    const confirmed = window.confirm("Delete this bounty? This cannot be undone.");
-    if (!confirmed) {
-      return;
-    }
-
-    setDeletingProjectId(projectId);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      await deleteProjectRequest(token, projectId);
-      await loadProjects();
-      setSuccess("Bounty deleted successfully.");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setDeletingProjectId(null);
-    }
-  }
-
-  async function onApplyToProject(projectId: string) {
-    if (!token) {
-      setError("Please login again to apply.");
-      return;
-    }
-
-    setApplyingProjectId(projectId);
-    setError(null);
-    setSuccess(null);
-    try {
-      const draft = proposalDrafts[projectId] ?? {
-        message: "",
-        proposedAmount: "",
-        estimatedDays: "",
-        deliverables: "",
-      };
-
-      const payload = {
-        message: draft.message.trim(),
-        proposedAmount: draft.proposedAmount.trim() ? Number(draft.proposedAmount) : undefined,
-        estimatedDays: draft.estimatedDays.trim() ? Number(draft.estimatedDays) : undefined,
-        deliverables: draft.deliverables.trim(),
-      };
-
-      if (!payload.message && !payload.deliverables) {
-        setError("Add a short proposal message or deliverables before applying.");
-        setApplyingProjectId(null);
-        return;
-      }
-
-      if (payload.proposedAmount !== undefined && (!Number.isFinite(payload.proposedAmount) || payload.proposedAmount <= 0)) {
-        setError("Proposed amount must be a valid positive number.");
-        setApplyingProjectId(null);
-        return;
-      }
-
-      if (payload.estimatedDays !== undefined && (!Number.isInteger(payload.estimatedDays) || payload.estimatedDays <= 0)) {
-        setError("Estimated days must be a positive whole number.");
-        setApplyingProjectId(null);
-        return;
-      }
-
-      await applyToProjectRequest(token, projectId, {
-        message: payload.message || undefined,
-        proposedAmount: payload.proposedAmount,
-        estimatedDays: payload.estimatedDays,
-        deliverables: payload.deliverables || undefined,
-      });
-      await loadProjects();
-      setSuccess("Applied to bounty successfully.");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setApplyingProjectId(null);
-    }
-  }
+  const openBountyPreview = useMemo(() => {
+    return filterByText(openBounties, (entry) => `${entry.title} ${entry.client?.name ?? ""}`, query).slice(0, 8);
+  }, [openBounties, query]);
 
   return (
     <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <PageIntro title={heading.title} subtitle={heading.subtitle} />
-        {user?.role === "CLIENT" ? (
-          <Dialog open={openCreate} onOpenChange={setOpenCreate}>
-            <DialogTrigger asChild>
-              <Button>Create Bounty</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle className="text-lg font-semibold">Create New Bounty</DialogTitle>
-                <DialogDescription className="text-sm text-[#4b4b4b]">
-                  Add scope details and BountyEscrow AI will initialize milestones and validation-ready structure.
-                </DialogDescription>
-              </DialogHeader>
-              <form onSubmit={onCreateProject} className="space-y-3">
-                <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Bounty title" required />
-                <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={5} placeholder="Describe bounty deliverables" required />
-                <select
-                  value={workType}
-                  onChange={(event) => setWorkType(event.target.value as "STRUCTURED" | "CREATIVE")}
-                  className="h-11 w-full rounded-xl border border-[#121212] bg-[#f5f5f5] px-3 text-sm text-[#121212]"
-                >
-                  <option value="STRUCTURED">Structured</option>
-                  <option value="CREATIVE">Creative</option>
-                </select>
-                <Button type="submit" disabled={creating} className="w-full">
-                  {creating ? "Creating..." : "Create Bounty"}
-                </Button>
-              </form>
-            </DialogContent>
-          </Dialog>
-        ) : null}
-      </div>
+      <PageIntro
+        title={isFreelancer ? "My Bounty Applications" : "Bounty Application Pipeline"}
+        subtitle={
+          isFreelancer
+            ? "See every bounty you applied to and track status in realtime."
+            : "Monitor all applications across your bounties."
+        }
+      />
+
+      <Card>
+        <div className="grid gap-2 sm:grid-cols-[1fr_200px_auto]">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={isFreelancer ? "Search by bounty title or client" : "Search by bounty title"}
+          />
+          {isFreelancer ? (
+            <Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="">All statuses</option>
+              <option value="PENDING">Pending</option>
+              <option value="SELECTED">Selected</option>
+              <option value="REJECTED">Rejected</option>
+            </Select>
+          ) : (
+            <div />
+          )}
+          <Button variant="secondary" onClick={() => void load()}>Refresh</Button>
+        </div>
+      </Card>
 
       {error ? <p className="text-sm text-[#8f1515]">{error}</p> : null}
-      {success ? <p className="text-sm text-[#0f7b44]">{success}</p> : null}
-        {loading ? <p className="text-[#4b4b4b]">Loading bounties...</p> : null}
+      {loading ? <p className="text-sm text-[#4b4b4b]">Loading application status...</p> : null}
 
-      {user?.role === "FREELANCER" ? (
+      {isFreelancer ? (
         <Card>
-          <h3 className="text-lg font-semibold">Open Bounties You Can Apply To</h3>
-          <p className="mt-1 text-sm text-[#4b4b4b]">Browse open bounties, show interest, and wait for selection.</p>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {openProjects.map((project) => (
-              <div key={project.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-4">
-                <p className="font-medium text-[#121212]">{project.title}</p>
-                <p className="mt-1 text-xs text-[#4b4b4b]">Client {project.client?.name ?? "Unknown"}</p>
-                <p className="mt-2 text-xs text-[#5b5b5b]">Applicants: {project._count?.applications ?? 0}</p>
-                {!project.applications?.length ? (
-                  <div className="mt-3 space-y-2">
-                    <Textarea
-                      rows={2}
-                      placeholder="Short proposal message"
-                      value={proposalDrafts[project.id]?.message ?? ""}
-                      onChange={(event) =>
-                        setProposalDrafts((prev) => ({
-                          ...prev,
-                          [project.id]: {
-                            message: event.target.value,
-                            proposedAmount: prev[project.id]?.proposedAmount ?? "",
-                            estimatedDays: prev[project.id]?.estimatedDays ?? "",
-                            deliverables: prev[project.id]?.deliverables ?? "",
-                          },
-                        }))
-                      }
-                    />
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <Input
-                        type="number"
-                        min="1"
-                        step="0.01"
-                        placeholder="Proposed budget"
-                        value={proposalDrafts[project.id]?.proposedAmount ?? ""}
-                        onChange={(event) =>
-                          setProposalDrafts((prev) => ({
-                            ...prev,
-                            [project.id]: {
-                              message: prev[project.id]?.message ?? "",
-                              proposedAmount: event.target.value,
-                              estimatedDays: prev[project.id]?.estimatedDays ?? "",
-                              deliverables: prev[project.id]?.deliverables ?? "",
-                            },
-                          }))
-                        }
-                      />
-                      <Input
-                        type="number"
-                        min="1"
-                        step="1"
-                        placeholder="Estimated days"
-                        value={proposalDrafts[project.id]?.estimatedDays ?? ""}
-                        onChange={(event) =>
-                          setProposalDrafts((prev) => ({
-                            ...prev,
-                            [project.id]: {
-                              message: prev[project.id]?.message ?? "",
-                              proposedAmount: prev[project.id]?.proposedAmount ?? "",
-                              estimatedDays: event.target.value,
-                              deliverables: prev[project.id]?.deliverables ?? "",
-                            },
-                          }))
-                        }
-                      />
-                    </div>
-                    <Textarea
-                      rows={2}
-                      placeholder="Deliverables you will provide"
-                      value={proposalDrafts[project.id]?.deliverables ?? ""}
-                      onChange={(event) =>
-                        setProposalDrafts((prev) => ({
-                          ...prev,
-                          [project.id]: {
-                            message: prev[project.id]?.message ?? "",
-                            proposedAmount: prev[project.id]?.proposedAmount ?? "",
-                            estimatedDays: prev[project.id]?.estimatedDays ?? "",
-                            deliverables: event.target.value,
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-                ) : null}
-                <Button
-                  className="mt-3"
-                  disabled={Boolean(project.applications?.length) || applyingProjectId === project.id}
-                  onClick={() => void onApplyToProject(project.id)}
-                >
-                  {project.applications?.length
-                    ? "Applied"
-                    : applyingProjectId === project.id
-                      ? "Applying..."
-                      : "Apply to Bounty"}
-                </Button>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-[#d8d8d8] text-xs uppercase tracking-wide text-[#4b4b4b]">
+                  <th className="py-2 pr-4">Bounty</th>
+                  <th className="py-2 pr-4">Client</th>
+                  <th className="py-2 pr-4">Applied</th>
+                  <th className="py-2 pr-4">Application Status</th>
+                  <th className="py-2 pr-4">Bounty Status</th>
+                  <th className="py-2 pr-4">Proposed</th>
+                  <th className="py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredApplications.map((entry) => (
+                  <tr key={entry.application.id} className="border-b border-[#ececec] align-top">
+                    <td className="py-3 pr-4">
+                      <p className="font-semibold">{entry.project.title}</p>
+                      <p className="text-xs text-[#4b4b4b]">Deadline: {asDate(entry.project.criteria?.deadline)}</p>
+                    </td>
+                    <td className="py-3 pr-4">{entry.project.client?.name ?? "Unknown"}</td>
+                    <td className="py-3 pr-4">{asDate(entry.application.createdAt)}</td>
+                    <td className="py-3 pr-4"><Pill text={entry.application.status} /></td>
+                    <td className="py-3 pr-4"><Pill text={entry.project.status} /></td>
+                    <td className="py-3 pr-4">
+                      {entry.application.proposedAmount ? `${entry.application.proposedAmount} microALGO` : "-"}
+                    </td>
+                    <td className="py-3">
+                      <div className="flex gap-2">
+                        <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+                          <Link href={`/bounties/${entry.project.id}`}>View Bounty</Link>
+                        </Button>
+                        {String(entry.application.status).toUpperCase() === "SELECTED" ? (
+                          <Button asChild className="h-8 px-3 text-xs">
+                            <Link href={`/dashboard/chat/${entry.project.id}`}>Open Chat</Link>
+                          </Button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!loading && filteredApplications.length === 0 ? (
+            <p className="mt-3 text-sm text-[#4b4b4b]">No applications found for the current filter.</p>
+          ) : null}
+        </Card>
+      ) : (
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-[#d8d8d8] text-xs uppercase tracking-wide text-[#4b4b4b]">
+                  <th className="py-2 pr-4">Bounty</th>
+                  <th className="py-2 pr-4">Bounty Status</th>
+                  <th className="py-2 pr-4">Applications</th>
+                  <th className="py-2 pr-4">Deadline</th>
+                  <th className="py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredClientBounties.map((entry) => (
+                  <tr key={entry.id} className="border-b border-[#ececec] align-top">
+                    <td className="py-3 pr-4 font-semibold">{entry.title}</td>
+                    <td className="py-3 pr-4"><Pill text={entry.status} /></td>
+                    <td className="py-3 pr-4">{entry._count?.applications ?? 0}</td>
+                    <td className="py-3 pr-4">{asDate(entry.criteria?.deadline)}</td>
+                    <td className="py-3">
+                      <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+                        <Link href={`/dashboard/projects/${entry.id}`}>Manage</Link>
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!loading && filteredClientBounties.length === 0 ? (
+            <p className="mt-3 text-sm text-[#4b4b4b]">No bounties found.</p>
+          ) : null}
+        </Card>
+      )}
+
+      {isFreelancer ? (
+        <Card>
+          <h3 className="text-lg font-semibold">Open Bounties to Apply</h3>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {openBountyPreview.map((item) => (
+              <div key={item.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-semibold">{item.title}</p>
+                  <Pill text={item.status} />
+                </div>
+                <p className="mt-1 text-xs text-[#4b4b4b]">Client {item.client?.name ?? "Unknown"}</p>
+                <p className="mt-1 text-xs text-[#4b4b4b]">Budget {item.criteria?.totalAmountMicroAlgo ?? 0} microALGO</p>
+                <div className="mt-3">
+                  <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+                    <Link href={`/bounties/${item.id}`}>Open Bounty</Link>
+                  </Button>
+                </div>
               </div>
             ))}
-            {!loading && openProjects.length === 0 ? (
-              <p className="text-sm text-[#4b4b4b]">No open bounties available right now.</p>
-            ) : null}
           </div>
-        </Card>
-      ) : null}
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        {projects.map((project) => {
-          const milestones = project.milestones ?? [];
-          const approved = milestones.filter((item) => item.status === "APPROVED").length;
-          const progress = milestones.length > 0 ? (approved / milestones.length) * 100 : 0;
-
-          return (
-            <Card key={project.id}>
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-lg font-semibold">{project.title}</p>
-                  <p className="mt-1 text-sm text-[#4b4b4b]">{user?.role === "FREELANCER" ? "Assigned by" : "Freelancer"} {project.freelancer?.name ?? "Not assigned"}</p>
-                </div>
-                <Pill text={project.status} />
-              </div>
-              <div className="mt-4">
-                <p className="mb-1 text-xs text-[#4b4b4b]">Milestone Progress</p>
-                <ProgressBar value={progress} />
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button asChild variant="secondary">
-                  <Link href={`/dashboard/bounties/${project.id}`}>View Details</Link>
-                </Button>
-                <Button asChild>
-                  <Link href={`/dashboard/chat/${project.id}`}>Open Chat</Link>
-                </Button>
-                {user?.role === "CLIENT" ? (
-                  <Button
-                    variant="ghost"
-                    onClick={() => void onDeleteProject(project.id)}
-                    disabled={deletingProjectId === project.id}
-                  >
-                    {deletingProjectId === project.id ? "Deleting..." : "Delete"}
-                  </Button>
-                ) : null}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-
-      {!loading && projects.length === 0 ? (
-        <Card>
-          <p className="text-[#3f3f3f]">
-            {user?.role === "FREELANCER"
-              ? "No assigned bounties yet. Once a client assigns you, your delivery workflow appears here."
-              : "No bounties created yet. Create your first bounty to start escrow-backed execution."}
-          </p>
         </Card>
       ) : null}
     </motion.section>
   );
 }
-

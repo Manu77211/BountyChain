@@ -6,4 +6,8 @@ export const freelancerListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+export const freelancerIdParamSchema = z.object({
+  id: z.string().uuid("id must be a UUID"),
+});
+
 export type FreelancerListQuery = z.infer<typeof freelancerListQuerySchema>;

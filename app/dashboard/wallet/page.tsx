@@ -30,6 +30,7 @@ export default function DashboardWalletPage() {
   const [balance, setBalance] = useState(0);
   const [projects, setProjects] = useState<WalletProject[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     hydrate();
@@ -42,11 +43,14 @@ export default function DashboardWalletPage() {
       }
 
       setLoading(true);
+      setError(null);
       try {
         const [profile, projectList] = await Promise.all([meRequest(token), listProjectsRequest(token)]);
         const typedProfile = profile as WalletProfile;
         setBalance(typedProfile.walletBalance ?? 0);
         setProjects(projectList as WalletProject[]);
+      } catch (requestError) {
+        setError((requestError as Error).message);
       } finally {
         setLoading(false);
       }
@@ -81,6 +85,7 @@ export default function DashboardWalletPage() {
       />
 
       {loading ? <p className="text-[#4b4b4b]">Loading wallet...</p> : null}
+      {error ? <p className="text-sm text-[#8f1515]">{error}</p> : null}
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="p-5">

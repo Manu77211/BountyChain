@@ -16,6 +16,17 @@ export const SOCKET_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, "");
 const NETWORK_ERROR_MESSAGE =
   "Cannot reach API server. Start backend on port 4000 using npm run api:start (or run npm run dev) and set NEXT_PUBLIC_API_URL in .env or .env.local.";
 
+function normalizeApiErrorMessage(message: string) {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("database unavailable")) {
+    return "Backend database is currently unavailable. Check DATABASE_URL and API server status.";
+  }
+  if (normalized.includes("cannot reach api server")) {
+    return "Backend API is unreachable. Start the API server and verify NEXT_PUBLIC_API_URL.";
+  }
+  return message;
+}
+
 async function parseErrorMessage(response: Response, fallback: string) {
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
@@ -30,14 +41,6 @@ async function parseErrorMessage(response: Response, fallback: string) {
       };
     };
 
-    if (payload.detail) {
-      return payload.detail;
-    }
-
-    if (payload.message) {
-      return payload.message;
-    }
-
     const fieldErrors = payload.issues?.fieldErrors
       ? Object.values(payload.issues.fieldErrors).flat().filter(Boolean)
       : [];
@@ -46,13 +49,21 @@ async function parseErrorMessage(response: Response, fallback: string) {
     const merged = [...formErrors, ...fieldErrors];
 
     if (merged.length > 0) {
-      return merged.join(" | ");
+      return normalizeApiErrorMessage(merged.join(" | "));
     }
 
-    return fallback;
+    if (payload.detail) {
+      return normalizeApiErrorMessage(payload.detail);
+    }
+
+    if (payload.message) {
+      return normalizeApiErrorMessage(payload.message);
+    }
+
+    return normalizeApiErrorMessage(fallback);
   }
   const text = await response.text();
-  return text || fallback;
+  return normalizeApiErrorMessage(text || fallback);
 }
 
 async function safeFetch(input: RequestInfo | URL, init?: RequestInit) {
@@ -69,7 +80,7 @@ export interface AuthPayload {
     id: string;
     name: string;
     email: string;
-    role: "CLIENT" | "FREELANCER";
+    role: "CLIENT" | "FREELANCER" | "ADMIN" | "ARBITRATOR";
     skills: string[];
     rating: number;
     trustScore: number;
@@ -144,7 +155,14 @@ export async function walletLoginRequest(payload: {
     };
   };
 
-  const mappedRole = data.user.role === "client" ? "CLIENT" : "FREELANCER";
+  const mappedRole =
+    data.user.role === "client"
+      ? "CLIENT"
+      : data.user.role === "arbitrator"
+        ? "ARBITRATOR"
+        : data.user.role === "admin"
+          ? "ADMIN"
+          : "FREELANCER";
   return {
     token: data.access_token,
     user: {
@@ -161,6 +179,48 @@ export async function walletLoginRequest(payload: {
   } as AuthPayload;
 }
 
+export async function getAuthNonceRequest(walletAddress?: string) {
+  const query = new URLSearchParams();
+  if (walletAddress) {
+    query.set("wallet_address", walletAddress);
+  }
+
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/auth/nonce${suffix}`, {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to request wallet nonce"));
+  }
+
+  return (await response.json()) as {
+    nonce: string;
+    message: string;
+    expires_in: number;
+  };
+}
+
+export async function authMeRequest(token?: string) {
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await safeFetch(`${API_BASE_URL}/auth/me`, {
+    credentials: "include",
+    headers,
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to refresh auth session"));
+  }
+
+  return (await response.json()) as {
+    user: AuthPayload["user"] & { wallet_address?: string };
+  };
+}
+
 export async function meRequest(token: string) {
   const response = await safeFetch(`${API_BASE_URL}/users/me`, {
     headers: {
@@ -170,6 +230,20 @@ export async function meRequest(token: string) {
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to load profile"));
+  }
+
+  return response.json();
+}
+
+export async function meStatsRequest(token: string) {
+  const response = await safeFetch(`${API_BASE_URL}/users/me/stats`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load dashboard stats"));
   }
 
   return response.json();
@@ -192,9 +266,25 @@ export async function listFreelancersRequest(params: { skills?: string; rating?:
   return response.json();
 }
 
+export async function getFreelancerRequest(freelancerId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/freelancers/${freelancerId}`);
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load freelancer"));
+  }
+  return response.json();
+}
+
 export async function createProjectRequest(
   token: string,
-  payload: { title: string; description: string; workType: "STRUCTURED" | "CREATIVE" },
+  payload: {
+    title: string;
+    description: string;
+    acceptanceCriteria: string;
+    requiredSkills: string[];
+    totalAmountMicroAlgo: number;
+    deadline: string;
+    workType: "STRUCTURED" | "CREATIVE";
+  },
 ) {
   const response = await safeFetch(`${API_BASE_URL}/projects`, {
     method: "POST",
@@ -283,6 +373,20 @@ export async function discoverOpenProjectsRequest(token: string) {
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to discover bounties"));
+  }
+
+  return response.json();
+}
+
+export async function listMyProjectApplicationsRequest(token: string) {
+  const response = await safeFetch(`${API_BASE_URL}/projects/my-applications`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load project applications"));
   }
 
   return response.json();
@@ -449,6 +553,21 @@ export async function requestSubmissionChangesRequest(token: string, submissionI
   return response.json();
 }
 
+export async function retriggerSubmissionCiRequest(token: string, submissionId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/retrigger-ci`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to re-trigger CI"));
+  }
+
+  return response.json();
+}
+
 export interface ProjectMessage {
   id: string;
   projectId: string;
@@ -475,6 +594,45 @@ export async function listProjectMessagesRequest(token: string, projectId: strin
   }
 
   return (await response.json()) as ProjectMessage[];
+}
+
+export async function listProjectMeetingsRequest(token: string, projectId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/projects/${projectId}/meetings`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load meetings"));
+  }
+
+  return response.json();
+}
+
+export async function createProjectMeetingRequest(
+  token: string,
+  projectId: string,
+  payload: {
+    title: string;
+    agenda?: string;
+    scheduledFor: string;
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/projects/${projectId}/meetings`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to schedule meeting"));
+  }
+
+  return response.json();
 }
 
 function withAuth(token: string) {
@@ -507,6 +665,39 @@ export async function listBountiesRequest(params?: {
   const response = await safeFetch(`${API_BASE_URL}/bounties${suffix}`);
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to load bounties"));
+  }
+  return response.json();
+}
+
+export async function listMyBountiesRequest(
+  token: string,
+  params?: {
+    status?: string;
+    language?: string;
+    limit?: number;
+    cursor?: string;
+  },
+) {
+  const search = new URLSearchParams();
+  if (params?.status) {
+    search.set("status", params.status);
+  }
+  if (params?.language) {
+    search.set("language", params.language);
+  }
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+  if (params?.cursor) {
+    search.set("cursor", params.cursor);
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/bounties/mine${suffix}`, {
+    headers: withAuth(token),
+  });
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load your bounties"));
   }
   return response.json();
 }
@@ -564,6 +755,102 @@ export async function fundBountyRequest(token: string, bountyId: string) {
   return response.json();
 }
 
+export async function extendBountyDeadlineRequest(token: string, bountyId: string, deadline: string) {
+  const response = await safeFetch(`${API_BASE_URL}/bounties/${bountyId}/extend-deadline`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...withAuth(token),
+    },
+    body: JSON.stringify({ deadline }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to extend deadline"));
+  }
+
+  return response.json();
+}
+
+export async function cancelBountyRequest(token: string, bountyId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/bounties/${bountyId}`, {
+    method: "DELETE",
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to cancel bounty"));
+  }
+
+  return response.json();
+}
+
+export async function validateGithubRepoRequest(token: string, repoUrl: string) {
+  const search = new URLSearchParams({ url: repoUrl });
+  const response = await safeFetch(`${API_BASE_URL}/github/validate-repo?${search.toString()}`, {
+    headers: withAuth(token),
+  });
+
+  const payload = (await response.json()) as {
+    error?: string;
+    code?: number;
+    detail?: string;
+    install_url?: string;
+    repository_accessible?: boolean;
+    app_installed?: boolean;
+    has_workflows?: boolean;
+    warning?: string | null;
+  };
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      detail: payload.detail ?? payload.error ?? "Failed to validate repository",
+      install_url: payload.install_url ?? null,
+    };
+  }
+
+  return {
+    ok: true,
+    repository_accessible: Boolean(payload.repository_accessible),
+    app_installed: Boolean(payload.app_installed),
+    has_workflows: Boolean(payload.has_workflows),
+    warning: payload.warning ?? null,
+    install_url: payload.install_url ?? null,
+  };
+}
+
+export async function getBountyContextRequest(token: string, bountyId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/bounties/${bountyId}/context`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load bounty context"));
+  }
+
+  return response.json() as Promise<{
+    bounty: Record<string, unknown>;
+    creator: { id: string; wallet_address: string; email: string | null } | null;
+    milestones: Array<Record<string, unknown>>;
+    submissions: Array<Record<string, unknown>>;
+    submissions_count: number;
+    active_submission_count: number;
+    viewer: {
+      role: string;
+      user_id: string;
+      is_client: boolean;
+      is_freelancer: boolean;
+    };
+    activity: Array<{
+      key: string;
+      label: string;
+      at: string;
+      detail?: string;
+    }>;
+  }>;
+}
+
 export async function acceptBountyRequest(
   token: string,
   bountyId: string,
@@ -599,6 +886,27 @@ export async function getSubmissionRequest(token: string, submissionId: string) 
   return response.json();
 }
 
+export async function listSubmissionsRequest(token: string, params?: { query?: string; limit?: number }) {
+  const search = new URLSearchParams();
+  if (params?.query) {
+    search.set("query", params.query);
+  }
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/submissions${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load submissions"));
+  }
+
+  return response.json();
+}
+
 export async function flagSubmissionScoreRequest(token: string, submissionId: string, reason: string) {
   const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/flag-score`, {
     method: "POST",
@@ -623,6 +931,49 @@ export async function getDisputeRequest(token: string, disputeId: string) {
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to load dispute"));
+  }
+
+  return response.json();
+}
+
+export async function listDisputesRequest(
+  token: string,
+  params?: {
+    scope?: "my" | "arbitrator";
+    status?: string;
+    limit?: number;
+  },
+) {
+  const search = new URLSearchParams();
+  if (params?.scope) {
+    search.set("scope", params.scope);
+  }
+  if (params?.status) {
+    search.set("status", params.status);
+  }
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/disputes${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load disputes"));
+  }
+
+  return response.json();
+}
+
+export async function getDisputeActivityRequest(token: string, disputeId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/disputes/${disputeId}/activity`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load dispute activity"));
   }
 
   return response.json();
@@ -706,6 +1057,335 @@ export async function updateMeRequest(token: string, payload: { email?: string }
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to update profile"));
+  }
+
+  return response.json();
+}
+
+export async function getProfileSummaryRequest(token: string) {
+  const response = await safeFetch(`${API_BASE_URL}/users/me/summary`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load profile summary"));
+  }
+
+  return response.json();
+}
+
+export async function listProfileActivitiesRequest(
+  token: string,
+  params: {
+    type: "bounties" | "submissions" | "payouts" | "disputes";
+    page?: number;
+    page_size?: number;
+    from?: string;
+    to?: string;
+  },
+) {
+  const search = new URLSearchParams({ type: params.type });
+  if (params.page) {
+    search.set("page", String(params.page));
+  }
+  if (params.page_size) {
+    search.set("page_size", String(params.page_size));
+  }
+  if (params.from) {
+    search.set("from", params.from);
+  }
+  if (params.to) {
+    search.set("to", params.to);
+  }
+
+  const response = await safeFetch(`${API_BASE_URL}/users/me/activities?${search.toString()}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load profile activities"));
+  }
+
+  return response.json();
+}
+
+export async function listProfilePayoutsRequest(
+  token: string,
+  params?: {
+    page?: number;
+    page_size?: number;
+    from?: string;
+    to?: string;
+  },
+) {
+  const search = new URLSearchParams();
+  if (params?.page) {
+    search.set("page", String(params.page));
+  }
+  if (params?.page_size) {
+    search.set("page_size", String(params.page_size));
+  }
+  if (params?.from) {
+    search.set("from", params.from);
+  }
+  if (params?.to) {
+    search.set("to", params.to);
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/users/me/payouts${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load payout history"));
+  }
+
+  return response.json();
+}
+
+export async function adminOverviewRequest(token: string) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/overview`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load admin overview"));
+  }
+
+  return response.json();
+}
+
+export async function adminConsistencyAlertsRequest(token: string) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/consistency-alerts`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load consistency alerts"));
+  }
+
+  return response.json();
+}
+
+export async function adminListBountiesRequest(
+  token: string,
+  params?: {
+    status?: string;
+    creator?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  },
+) {
+  const search = new URLSearchParams();
+  if (params?.status) {
+    search.set("status", params.status);
+  }
+  if (params?.creator) {
+    search.set("creator", params.creator);
+  }
+  if (params?.from) {
+    search.set("from", params.from);
+  }
+  if (params?.to) {
+    search.set("to", params.to);
+  }
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/admin/bounties${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load admin bounties"));
+  }
+
+  return response.json();
+}
+
+export async function adminBountyActionRequest(
+  token: string,
+  bountyId: string,
+  action: "force-expire" | "force-refund" | "override-scoring" | "cancel",
+  payload?: Record<string, unknown>,
+) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/bounties/${bountyId}/${action}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...withAuth(token),
+    },
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to run bounty admin action"));
+  }
+
+  return response.json();
+}
+
+export async function adminListUsersRequest(
+  token: string,
+  params?: { query?: string; role?: "client" | "freelancer" | "arbitrator" | "admin"; limit?: number },
+) {
+  const search = new URLSearchParams();
+  if (params?.query) {
+    search.set("query", params.query);
+  }
+  if (params?.role) {
+    search.set("role", params.role);
+  }
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/admin/users${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load admin users"));
+  }
+
+  return response.json();
+}
+
+export async function adminRemoveBanRequest(token: string, userId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/users/${userId}/remove-ban`, {
+    method: "POST",
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to remove ban"));
+  }
+
+  return response.json();
+}
+
+export async function adminChangeRoleRequest(
+  token: string,
+  userId: string,
+  role: "client" | "freelancer" | "arbitrator" | "admin",
+) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/users/${userId}/change-role`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...withAuth(token),
+    },
+    body: JSON.stringify({ role }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to change role"));
+  }
+
+  return response.json();
+}
+
+export async function adminBanWalletRequest(
+  token: string,
+  payload: {
+    wallet_address: string;
+    reason: string;
+    mfa_token: string;
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/ban-wallet`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...withAuth(token),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to ban wallet"));
+  }
+
+  return response.json();
+}
+
+export async function adminListDisputesRequest(token: string, params?: { status?: string; limit?: number }) {
+  const search = new URLSearchParams();
+  if (params?.status) {
+    search.set("status", params.status);
+  }
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/admin/disputes${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load admin disputes"));
+  }
+
+  return response.json();
+}
+
+export async function adminManualResolveDisputeRequest(
+  token: string,
+  disputeId: string,
+  payload: {
+    outcome: "freelancer_wins" | "client_wins" | "split";
+    freelancer_share_percent?: number;
+    justification: string;
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/disputes/${disputeId}/manual-resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...withAuth(token),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to manually resolve dispute"));
+  }
+
+  return response.json();
+}
+
+export async function adminDeadLettersRequest(token: string, params?: { limit?: number }) {
+  const search = new URLSearchParams();
+  if (params?.limit) {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/admin/dead-letters${suffix}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load dead letters"));
+  }
+
+  return response.json();
+}
+
+export async function adminRetryDeadLetterRequest(token: string, id: number) {
+  const response = await safeFetch(`${API_BASE_URL}/admin/dead-letters/${id}/retry`, {
+    method: "POST",
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to retry dead letter"));
   }
 
   return response.json();

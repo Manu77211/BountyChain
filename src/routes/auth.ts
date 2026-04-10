@@ -3,6 +3,7 @@ import { Router, type Response } from "express";
 import jwt from "jsonwebtoken";
 import { dbQuery } from "../../lib/db/client";
 import type { UserRole } from "../../lib/db/types";
+import { requireAuth } from "../middleware/auth";
 import { validateBody } from "../middleware/validate";
 import { loginSchema, registerSchema, walletLoginSchema } from "../schemas/auth.schema";
 import { screenWalletAndLog } from "../middleware/sanctions";
@@ -13,7 +14,7 @@ const router = Router();
 const ACCESS_TOKEN_SECRET = process.env.JWT_ACCESS_SECRET ?? "dev-access-secret";
 const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET ?? "dev-refresh-secret";
 
-const ACCESS_TTL_SECONDS = 15 * 60;
+const ACCESS_TTL_SECONDS = process.env.HACKATHON_MODE === "true" ? 7 * 24 * 60 * 60 : 15 * 60;
 const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60;
 const REFRESH_COOKIE_NAME = "refresh_token";
 const ACCESS_COOKIE_NAME = "access_token";
@@ -117,6 +118,74 @@ function formatAuthPayload(input: {
     },
   };
 }
+
+router.get("/nonce", (request, response) => {
+  const walletAddress = String(request.query.wallet_address ?? "").trim();
+  const nonce = randomUUID();
+  const timestamp = new Date().toISOString();
+  const normalizedWallet = walletAddress ? normalizeWalletAddress(walletAddress) : "";
+  const message = normalizedWallet
+    ? `BountyEscrow wallet auth\nNonce: ${nonce}\nAddress: ${normalizedWallet}\nTimestamp: ${timestamp}`
+    : `BountyEscrow wallet auth\nNonce: ${nonce}\nTimestamp: ${timestamp}`;
+
+  return response.status(200).json({
+    nonce,
+    message,
+    expires_in: 300,
+  });
+});
+
+router.get("/me", requireAuth, async (request, response) => {
+  if (!request.user) {
+    return response.status(401).json({
+      error: "Unauthorized",
+      code: 401,
+      detail: "Login required",
+    });
+  }
+
+  const result = await dbQuery<{
+    id: string;
+    email: string | null;
+    wallet_address: string;
+    role: UserRole;
+    reputation_score: number;
+    display_name: string | null;
+  }>(
+    `
+      SELECT id, email, wallet_address, role, reputation_score, display_name
+      FROM users
+      WHERE id = $1
+        AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [request.user.userId],
+  );
+
+  if ((result.rowCount ?? 0) === 0) {
+    return response.status(404).json({
+      error: "Not found",
+      code: 404,
+      detail: "User not found",
+    });
+  }
+
+  const user = result.rows[0];
+  return response.status(200).json({
+    user: {
+      id: user.id,
+      name: user.display_name ?? user.email ?? "BountyEscrow User",
+      email: user.email ?? "",
+      role: toClientRole(user.role),
+      skills: [],
+      rating: Number((user.reputation_score / 20).toFixed(2)),
+      trustScore: user.reputation_score,
+      experience: "",
+      portfolio: [],
+      wallet_address: user.wallet_address,
+    },
+  });
+});
 
 router.post("/register", validateBody(registerSchema), async (request, response, next) => {
   try {

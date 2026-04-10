@@ -6,8 +6,10 @@ import { useParams } from "next/navigation";
 import {
   approveProjectDraftRequest,
   assignFreelancerRequest,
-  createSubmissionRequest,
+  createProjectMeetingRequest,
+  createMilestoneSubmissionRequest,
   getProjectRequest,
+  listProjectMeetingsRequest,
   listProjectApplicantsRequest,
   listFreelancersRequest,
   requestSubmissionChangesRequest,
@@ -72,6 +74,17 @@ type ApplicantView = {
   };
 };
 
+type ProjectMeeting = {
+  id: string;
+  projectId: string;
+  title: string;
+  agenda?: string;
+  meetingUrl: string;
+  scheduledFor: string;
+  createdAt: string;
+  scheduledBy: string;
+};
+
 type FreelancerOption = {
   id: string;
   name: string;
@@ -81,8 +94,16 @@ type FreelancerOption = {
 type ProjectDetailView = {
   id: string;
   title: string;
+  description?: string;
   status: string;
   draftApproved?: boolean;
+  criteria?: {
+    acceptanceCriteria?: string;
+    requiredSkills?: string[];
+    totalAmountMicroAlgo?: number;
+    deadline?: string;
+    scoringMode?: string;
+  };
   client: ParticipantView;
   freelancer?: ParticipantView | null;
   milestones?: MilestoneView[];
@@ -105,6 +126,14 @@ export default function DashboardProjectDetailPage() {
   const [feedbackInputs, setFeedbackInputs] = useState<Record<string, string>>({});
   const [milestoneForms, setMilestoneForms] = useState<Record<string, MilestoneFormState>>({});
   const [validationResult, setValidationResult] = useState<ValidationReportView | null>(null);
+  const [meetings, setMeetings] = useState<ProjectMeeting[]>([]);
+  const [meetingTitle, setMeetingTitle] = useState("Weekly Sync");
+  const [meetingAgenda, setMeetingAgenda] = useState("");
+  const [meetingTime, setMeetingTime] = useState(() => {
+    const base = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const local = new Date(base.getTime() - base.getTimezoneOffset() * 60_000);
+    return local.toISOString().slice(0, 16);
+  });
 
   useEffect(() => {
     hydrate();
@@ -121,6 +150,13 @@ export default function DashboardProjectDetailPage() {
     try {
       const data = (await getProjectRequest(token, projectId)) as ProjectDetailView;
       setProject(data);
+
+      try {
+        const meetingList = (await listProjectMeetingsRequest(token, projectId)) as ProjectMeeting[];
+        setMeetings(meetingList ?? []);
+      } catch {
+        setMeetings([]);
+      }
 
       if (user?.role === "CLIENT" && !data.freelancer) {
         const freelancerData = (await listFreelancersRequest({})) as FreelancerOption[];
@@ -277,10 +313,10 @@ export default function DashboardProjectDetailPage() {
 
     try {
       const state = milestoneForms[milestoneId] ?? { fileUrl: "", notes: "" };
-      await createSubmissionRequest(token, {
-        milestoneId,
-        fileUrl: state.fileUrl,
-        notes: state.notes,
+      await createMilestoneSubmissionRequest(token, projectId, milestoneId, {
+        kind: "FINAL",
+        fileUrl: state.fileUrl || undefined,
+        notes: state.notes || undefined,
       });
 
       await loadProject();
@@ -341,6 +377,49 @@ export default function DashboardProjectDetailPage() {
     }
   }
 
+  async function onScheduleMeeting(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !projectId) {
+      return;
+    }
+
+    const title = meetingTitle.trim();
+    const when = new Date(meetingTime);
+    if (title.length < 3) {
+      setError("Meeting title must be at least 3 characters.");
+      return;
+    }
+    if (Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) {
+      setError("Meeting time must be in the future.");
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      await createProjectMeetingRequest(token, projectId, {
+        title,
+        agenda: meetingAgenda.trim() || undefined,
+        scheduledFor: when.toISOString(),
+      });
+      const refreshed = (await listProjectMeetingsRequest(token, projectId)) as ProjectMeeting[];
+      setMeetings(refreshed ?? []);
+      setMeetingAgenda("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function applicantFitScore(application: ApplicantView) {
+    const rating = Number(application.freelancer?.rating ?? 0);
+    const trust = Number(application.freelancer?.trustScore ?? 0);
+    const costBonus = application.proposedAmount ? Math.max(0, 20 - Math.min(20, application.proposedAmount / 50000)) : 10;
+    const speedBonus = application.estimatedDays ? Math.max(0, 20 - Math.min(20, application.estimatedDays)) : 8;
+    return Math.round(rating * 10 + trust * 0.2 + costBonus + speedBonus);
+  }
+
   if (loading) {
     return <p className="text-[#4b4b4b]">Loading bounty...</p>;
   }
@@ -368,9 +447,30 @@ export default function DashboardProjectDetailPage() {
               <Pill text={project.freelancer ? `Freelancer ${project.freelancer.name}` : "Freelancer not assigned"} />
             </div>
           </div>
-          <Button asChild variant="secondary">
-            <Link href={`/dashboard/chat/${project.id}`}>Open Chat</Link>
-          </Button>
+          {project.freelancer ? (
+            <Button asChild variant="secondary">
+              <Link href={`/dashboard/chat/${project.id}`}>Open Chat</Link>
+            </Button>
+          ) : (
+            <Button variant="secondary" disabled>
+              Assign Freelancer To Enable Chat
+            </Button>
+          )}
+        </div>
+        <p className="mt-3 text-sm text-[#4b4b4b]">{project.description ?? "No description provided."}</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          <div className="rounded-lg border border-[#121212] bg-[#f5f5f5] p-3 text-xs text-[#4b4b4b]">
+            <p className="font-semibold text-[#121212]">Acceptance Criteria</p>
+            <p className="mt-1">{project.criteria?.acceptanceCriteria ?? "Not specified"}</p>
+          </div>
+          <div className="rounded-lg border border-[#121212] bg-[#f5f5f5] p-3 text-xs text-[#4b4b4b]">
+            <p className="font-semibold text-[#121212]">Project Criteria</p>
+            <p className="mt-1">Budget {project.criteria?.totalAmountMicroAlgo ?? 0} microALGO</p>
+            <p className="mt-1">Deadline {project.criteria?.deadline ? new Date(project.criteria.deadline).toLocaleString() : "Not set"}</p>
+            {(project.criteria?.requiredSkills ?? []).length ? (
+              <p className="mt-1">Skills {(project.criteria?.requiredSkills ?? []).join(", ")}</p>
+            ) : null}
+          </div>
         </div>
         <div className="mt-4">
           <p className="mb-1 text-xs text-[#4b4b4b]">Milestone Completion</p>
@@ -389,6 +489,7 @@ export default function DashboardProjectDetailPage() {
                   <div>
                     <p className="font-medium text-[#121212]">{application.freelancer?.name}</p>
                     <p className="text-xs text-[#4b4b4b]">Rating {application.freelancer?.rating} | Trust {application.freelancer?.trustScore}</p>
+                    <p className="text-xs text-[#4b4b4b]">Fit score {applicantFitScore(application)}</p>
                     {application.message ? (
                       <p className="mt-1 text-xs text-[#5b5b5b]">&quot;{application.message}&quot;</p>
                     ) : null}
@@ -420,6 +521,53 @@ export default function DashboardProjectDetailPage() {
             <Button onClick={onAssignFreelancer} disabled={saving || !selectedFreelancerId}>
               {saving ? "Assigning..." : "Assign Freelancer"}
             </Button>
+          </div>
+        </Card>
+      ) : null}
+
+      {project.freelancer ? (
+        <Card>
+          <h3 className="text-lg font-semibold">Meetings</h3>
+          <p className="mt-1 text-sm text-[#4b4b4b]">Schedule collaboration calls after assignment. Meeting links are generated within platform routes.</p>
+
+          {(user?.role === "CLIENT" || user?.role === "FREELANCER") ? (
+            <form onSubmit={onScheduleMeeting} className="mt-4 space-y-2">
+              <div className="grid gap-2 md:grid-cols-2">
+                <Input
+                  value={meetingTitle}
+                  onChange={(event) => setMeetingTitle(event.target.value)}
+                  placeholder="Meeting title"
+                  required
+                />
+                <Input
+                  value={meetingTime}
+                  onChange={(event) => setMeetingTime(event.target.value)}
+                  type="datetime-local"
+                  required
+                />
+              </div>
+              <Textarea
+                rows={2}
+                value={meetingAgenda}
+                onChange={(event) => setMeetingAgenda(event.target.value)}
+                placeholder="Agenda (optional)"
+              />
+              <Button type="submit" disabled={saving}>{saving ? "Scheduling..." : "Schedule Meeting"}</Button>
+            </form>
+          ) : null}
+
+          <div className="mt-4 space-y-2">
+            {meetings.map((meeting) => (
+              <div key={meeting.id} className="rounded-lg border border-[#121212] bg-[#f5f5f5] p-3">
+                <p className="font-medium text-[#121212]">{meeting.title}</p>
+                <p className="text-xs text-[#4b4b4b]">{new Date(meeting.scheduledFor).toLocaleString()} | by {meeting.scheduledBy}</p>
+                {meeting.agenda ? <p className="mt-1 text-xs text-[#5b5b5b]">{meeting.agenda}</p> : null}
+                <a href={meeting.meetingUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-[#1040c0] underline">
+                  Open Meeting Link
+                </a>
+              </div>
+            ))}
+            {meetings.length === 0 ? <p className="text-sm text-[#4b4b4b]">No meetings scheduled yet.</p> : null}
           </div>
         </Card>
       ) : null}
@@ -523,7 +671,7 @@ export default function DashboardProjectDetailPage() {
                     />
                     <Button
                       onClick={() => void onRateSubmission(latestSubmission.id)}
-                      disabled={saving || latestSubmission.status !== "VALIDATED"}
+                      disabled={saving}
                     >
                       {saving ? "Scoring..." : "Rate + Decide"}
                     </Button>

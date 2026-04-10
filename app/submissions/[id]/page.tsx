@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { flagSubmissionScoreRequest, getSubmissionRequest, openDisputeRequest } from "../../../lib/api";
 import { useRealtimeChannel } from "../../../lib/realtime-client";
-import { DashboardShell } from "../../../components/dashboard-shell";
+import { AppShell } from "../../../src/components/layout/AppShell";
 import { Protected } from "../../../components/protected";
 import { Button, Card, Input, PageIntro, Pill } from "../../../components/ui/primitives";
 import { useAuthStore } from "../../../store/auth-store";
@@ -144,7 +144,7 @@ export default function SubmissionDetailPage() {
 
   return (
     <Protected>
-      <DashboardShell>
+      <AppShell>
         <section className="space-y-6">
           <PageIntro title="Submission Details" subtitle="Review CI, scoring, payout, and dispute state for this submission." />
 
@@ -256,7 +256,7 @@ export default function SubmissionDetailPage() {
             </>
           ) : null}
         </section>
-      </DashboardShell>
+      </AppShell>
     </Protected>
   );
 }

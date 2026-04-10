@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { listBountiesRequest } from "../../../lib/api";
+import { listBountiesRequest, listMyBountiesRequest } from "../../../lib/api";
 import { useRealtimeChannel } from "../../../lib/realtime-client";
 import { useAuthStore } from "../../../store/auth-store";
 import { Button, Card, PageIntro, Pill } from "../../../components/ui/primitives";
 
 type BountyListItem = {
 	id: string;
+	creator_id?: string;
 	title: string;
 	status: string;
 	total_amount: string;
@@ -17,7 +18,9 @@ type BountyListItem = {
 };
 
 export default function DashboardBountiesPage() {
-	const { token, hydrate } = useAuthStore();
+	const { token, user, hydrate } = useAuthStore();
+	const isClient = String(user?.role ?? "").toUpperCase() === "CLIENT";
+	const isFreelancer = String(user?.role ?? "").toUpperCase() === "FREELANCER";
 	const [bounties, setBounties] = useState<BountyListItem[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
@@ -27,17 +30,23 @@ export default function DashboardBountiesPage() {
 	}, [hydrate]);
 
 	const loadBounties = useCallback(async () => {
+		if (!token) {
+			return;
+		}
+
 		setLoading(true);
 		setError(null);
 		try {
-			const response = (await listBountiesRequest({ limit: 50 })) as { data?: BountyListItem[] };
+			const response = isClient
+				? (await listMyBountiesRequest(token, { limit: 50 })) as { data?: BountyListItem[] }
+				: (await listBountiesRequest({ status: "open", limit: 50 })) as { data?: BountyListItem[] };
 			setBounties(response.data ?? []);
 		} catch (requestError) {
 			setError((requestError as Error).message);
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [isClient, token]);
 
 	useEffect(() => {
 		void loadBounties();
@@ -57,9 +66,11 @@ export default function DashboardBountiesPage() {
 					title="Bounties"
 					subtitle="Browse active bounties and open details for realtime CI, scoring, payout, and disputes."
 				/>
-				<Button asChild>
-					<Link href="/bounties/create">Create Bounty</Link>
-				</Button>
+				{isClient ? (
+					<Button asChild>
+						<Link href="/bounties/create">Create Bounty</Link>
+					</Button>
+				) : null}
 			</div>
 
 			{error ? <p className="text-sm text-[#8f1515]">{error}</p> : null}
@@ -80,6 +91,11 @@ export default function DashboardBountiesPage() {
 							<Button asChild variant="secondary">
 								<Link href={`/bounties/${bounty.id}`}>View Details</Link>
 							</Button>
+							{isFreelancer ? (
+								<Button asChild>
+									<Link href={`/bounties/${bounty.id}`}>Apply for Bounty</Link>
+								</Button>
+							) : null}
 						</div>
 					</Card>
 				))}

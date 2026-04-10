@@ -191,6 +191,7 @@ export async function getDisputeDetails(disputeId: string, actorUserId: string, 
     settlement_tx_id: string | null;
     settlement_payload: Record<string, unknown>;
     bounty_id: string;
+    bounty_title: string;
     bounty_creator_id: string;
     bounty_acceptance_criteria: string;
     bounty_repo_url: string;
@@ -200,8 +201,13 @@ export async function getDisputeDetails(disputeId: string, actorUserId: string, 
     ai_score_raw: Record<string, unknown> | null;
     final_score: number | null;
     ci_status: string;
+    ci_run_id: string | null;
+    skipped_test_count: number;
+    total_test_count: number;
+    evidence_source: "live" | "cache";
     github_pr_url: string;
     github_branch: string;
+    head_sha: string | null;
   }>(
     `
       SELECT d.id AS dispute_id,
@@ -217,6 +223,7 @@ export async function getDisputeDetails(disputeId: string, actorUserId: string, 
              d.settlement_tx_id,
              d.settlement_payload,
              b.id AS bounty_id,
+                  b.title AS bounty_title,
              b.creator_id AS bounty_creator_id,
              b.acceptance_criteria AS bounty_acceptance_criteria,
              b.repo_url AS bounty_repo_url,
@@ -226,8 +233,13 @@ export async function getDisputeDetails(disputeId: string, actorUserId: string, 
              s.ai_score_raw,
              s.final_score,
              s.ci_status,
+                  s.ci_run_id,
+                  s.skipped_test_count,
+                  s.total_test_count,
+                  s.evidence_source,
              s.github_pr_url,
-             s.github_branch
+                  s.github_branch,
+                  s.head_sha
       FROM disputes d
       JOIN submissions s ON s.id = d.submission_id
       JOIN bounties b ON b.id = s.bounty_id
@@ -278,11 +290,17 @@ export async function getDisputeDetails(disputeId: string, actorUserId: string, 
       ai_score_raw: row.ai_score_raw,
       final_score: row.final_score,
       ci_status: row.ci_status,
+      ci_run_id: row.ci_run_id,
+      skipped_test_count: row.skipped_test_count,
+      total_test_count: row.total_test_count,
+      evidence_source: row.evidence_source,
       github_pr_url: row.github_pr_url,
       github_branch: row.github_branch,
+      head_sha: row.head_sha,
     },
     bounty: {
       id: row.bounty_id,
+      title: row.bounty_title,
       requirements: row.bounty_acceptance_criteria,
       repo_url: row.bounty_repo_url,
       target_branch: row.bounty_target_branch,

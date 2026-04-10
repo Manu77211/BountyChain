@@ -3,10 +3,13 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import express from "express";
 import helmet from "helmet";
+import adminRoutes from "./routes/admin";
 import authRoutes from "./routes/auth";
 import bountyRoutes from "./routes/bounties";
 import disputeRoutes from "./routes/disputes";
 import freelancersRoutes from "./routes/freelancers";
+import githubRoutes from "./routes/github";
+import projectsRoutes from "./routes/projects";
 import submissionsRoutes from "./routes/submissions";
 import userRoutes from "./routes/users";
 import { inngestApp } from "./inngest/serve";
@@ -111,8 +114,11 @@ app.get("/healthz", (_request, response) => {
 app.use("/api", healthRouter);
 
 app.use("/api/auth", authPerIpRateLimiter, authRoutes);
+app.use("/api", adminRoutes);
 app.use("/api/bounties", bountyRoutes);
 app.use("/api/freelancers", freelancersRoutes);
+app.use("/api/github", githubRoutes);
+app.use("/api/projects", projectsRoutes);
 app.use("/api/submissions", submissionsRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api", disputeRoutes);

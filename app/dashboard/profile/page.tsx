@@ -20,7 +20,21 @@ type ProfileResponse = {
   wallet_linked: boolean;
 };
 
+type UpdateProfileResponse = {
+  user: ProfileResponse["user"];
+};
+
 type WalletProvider = "pera" | "walletconnect" | "algosigner";
+
+function isSessionExpiredError(detail: string) {
+  const normalized = detail.toLowerCase();
+  return (
+    normalized.includes("unauthorized") ||
+    normalized.includes("session") ||
+    normalized.includes("expired token") ||
+    normalized.includes("invalid or expired token")
+  );
+}
 
 export default function DashboardProfilePage() {
   const { token, logout, hydrate } = useAuthStore();
@@ -58,8 +72,10 @@ export default function DashboardProfilePage() {
       } catch (requestError) {
         const detail = (requestError as Error).message;
         setError(detail);
-        if (detail.toLowerCase().includes("unauthorized") || detail.toLowerCase().includes("session")) {
+        if (isSessionExpiredError(detail)) {
           setSessionDropped(true);
+          logout();
+          router.replace("/login");
         }
       } finally {
         setLoading(false);
@@ -67,7 +83,7 @@ export default function DashboardProfilePage() {
     }
 
     void load();
-  }, [token]);
+  }, [token, logout, router]);
 
   const networkMismatch = useMemo(() => {
     const required = (process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet").toLowerCase();
@@ -83,8 +99,24 @@ export default function DashboardProfilePage() {
     setError(null);
 
     try {
-      const response = (await updateMeRequest(token, { email: email.trim() || undefined })) as ProfileResponse;
-      setProfile(response);
+      const response = (await updateMeRequest(token, {
+        email: email.trim() || undefined,
+      })) as UpdateProfileResponse;
+
+      setProfile((current) => {
+        if (!current) {
+          return {
+            user: response.user,
+            wallet_linked: Boolean(response.user.wallet_address),
+          };
+        }
+
+        return {
+          ...current,
+          user: response.user,
+          wallet_linked: Boolean(response.user.wallet_address),
+        };
+      });
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {

@@ -76,8 +76,9 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
     }
 
     const warnings: string[] = [];
+    const isHackathonMode = process.env.HACKATHON_MODE === "true";
     const hasWorkflows = await checkGitHubActionsWorkflows(repoInfo.owner, repoInfo.repo);
-    if (!hasWorkflows) {
+    if (!hasWorkflows && !isHackathonMode) {
       warnings.push("GH-C-003: GitHub Actions workflow is missing for this repository");
     }
 
@@ -312,6 +313,263 @@ router.get("/", perIpRateLimiter, validateQuery(bountyListQuerySchema), async (r
   }
 });
 
+router.get("/mine", requireAuth, validateQuery(bountyListQuerySchema), async (request, response, next) => {
+  try {
+    if (!request.user) {
+      throw new AppError(401, 401, "Unauthorized");
+    }
+
+    const query = request.query as unknown as {
+      status?: BountyStatus;
+      language?: string;
+      min_amount?: bigint;
+      max_amount?: bigint;
+      sort_by: "deadline" | "amount" | "created";
+      sort_order: "asc" | "desc";
+      limit: number;
+      cursor?: string;
+    };
+
+    const sortColumn =
+      query.sort_by === "deadline"
+        ? "deadline"
+        : query.sort_by === "amount"
+          ? "total_amount"
+          : "created_at";
+
+    const params: unknown[] = [request.user.userId];
+    const where: string[] = ["deleted_at IS NULL", "creator_id = $1"];
+
+    if (query.status) {
+      params.push(query.status);
+      where.push(`status = $${params.length}`);
+    }
+    if (query.language) {
+      params.push(query.language.toLowerCase());
+      where.push(`LOWER($${params.length}) = ANY (SELECT LOWER(x) FROM unnest(allowed_languages) AS x)`);
+    }
+    if (query.min_amount !== undefined) {
+      params.push(query.min_amount.toString());
+      where.push(`total_amount >= $${params.length}::bigint`);
+    }
+    if (query.max_amount !== undefined) {
+      params.push(query.max_amount.toString());
+      where.push(`total_amount <= $${params.length}::bigint`);
+    }
+
+    const cursor = decodeCursor(query.cursor);
+    if (cursor && cursor.sortValue) {
+      params.push(cursor.sortValue, cursor.id);
+      const op = query.sort_order === "asc" ? ">" : "<";
+      where.push(`(${sortColumn}, id) ${op} ($${params.length - 1}, $${params.length})`);
+    }
+
+    params.push(query.limit + 1);
+
+    const sql = `
+      SELECT ${BOUNTY_SELECT_COLUMNS}
+      FROM bounties
+      WHERE ${where.join(" AND ")}
+      ORDER BY ${sortColumn} ${query.sort_order.toUpperCase()}, id ${query.sort_order.toUpperCase()}
+      LIMIT $${params.length}
+    `;
+
+    const listed = await dbQuery<Record<string, unknown>>(sql, params);
+    const hasMore = listed.rows.length > query.limit;
+    const rows = hasMore ? listed.rows.slice(0, query.limit) : listed.rows;
+
+    const nextCursor = hasMore
+      ? encodeCursor({
+          id: String(rows[rows.length - 1].id),
+          sortValue: String(rows[rows.length - 1][sortColumn]),
+        })
+      : null;
+
+    return response.status(200).json({
+      data: rows,
+      page_info: {
+        next_cursor: nextCursor,
+        has_more: hasMore,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:id/context", requireAuth, validateParams(idParamSchema), async (request, response, next) => {
+  try {
+    if (!request.user) {
+      throw new AppError(401, 401, "Unauthorized");
+    }
+
+    const bounty = await getBountyById(request.params.id);
+    if (!bounty) {
+      throw new AppError(404, 404, "Bounty not found");
+    }
+
+    const creator = await dbQuery<{ id: string; wallet_address: string; email: string | null }>(
+      `
+        SELECT id, wallet_address, email
+        FROM users
+        WHERE id = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [bounty.creator_id],
+    );
+
+    const milestones = await dbQuery<{
+      id: string;
+      bounty_id: string;
+      title: string;
+      description: string;
+      payout_amount: string;
+      order_index: number;
+      status: string;
+      payout_tx_id: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `
+        SELECT id,
+               bounty_id,
+               title,
+               description,
+               payout_amount::text,
+               order_index,
+               status::text AS status,
+               payout_tx_id,
+               created_at::text,
+               updated_at::text
+        FROM milestones
+        WHERE bounty_id = $1
+        ORDER BY order_index ASC
+      `,
+      [bounty.id],
+    );
+
+    const submissions = await dbQuery<{
+      id: string;
+      bounty_id: string;
+      freelancer_id: string;
+      github_pr_url: string;
+      github_branch: string;
+      ci_status: string;
+      ci_run_id: string | null;
+      ci_retrigger_count: number;
+      skipped_test_count: number;
+      total_test_count: number;
+      ai_score: number | null;
+      ai_score_raw: Record<string, unknown> | null;
+      ai_integrity_flag: boolean;
+      ai_language_mismatch_flag: boolean;
+      final_score: number | null;
+      status: string;
+      score_finalized_at: string | null;
+      client_flagged_at: string | null;
+      submission_received_at: string;
+      created_at: string;
+      updated_at: string;
+      freelancer_wallet_address: string;
+      freelancer_email: string | null;
+      payout_status: string | null;
+      payout_tx_id: string | null;
+      payout_hold_reason: string | null;
+      dispute_id: string | null;
+      dispute_status: string | null;
+      dispute_raised_at: string | null;
+    }>(
+      `
+        SELECT s.id,
+               s.bounty_id,
+               s.freelancer_id,
+               s.github_pr_url,
+               s.github_branch,
+               s.ci_status::text AS ci_status,
+               s.ci_run_id::text,
+               COALESCE(s.ci_retrigger_count, 0) AS ci_retrigger_count,
+               s.skipped_test_count,
+               s.total_test_count,
+               s.ai_score,
+               s.ai_score_raw,
+               s.ai_integrity_flag,
+               s.ai_language_mismatch_flag,
+               s.final_score,
+               s.status::text AS status,
+               s.score_finalized_at::text,
+               s.client_flagged_at::text,
+               s.submission_received_at::text,
+               s.created_at::text,
+               s.updated_at::text,
+               u.wallet_address AS freelancer_wallet_address,
+               u.email AS freelancer_email,
+               p.status::text AS payout_status,
+               p.tx_id AS payout_tx_id,
+               p.hold_reason AS payout_hold_reason,
+               d.id AS dispute_id,
+               d.status::text AS dispute_status,
+               d.raised_at::text AS dispute_raised_at
+        FROM submissions s
+        JOIN users u ON u.id = s.freelancer_id
+        LEFT JOIN LATERAL (
+          SELECT status, tx_id, hold_reason
+          FROM payouts p
+          WHERE p.submission_id = s.id
+          ORDER BY p.created_at DESC
+          LIMIT 1
+        ) p ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT id, status, raised_at
+          FROM disputes d
+          WHERE d.submission_id = s.id
+          ORDER BY d.created_at DESC
+          LIMIT 1
+        ) d ON TRUE
+        WHERE s.bounty_id = $1
+        ORDER BY s.created_at DESC
+      `,
+      [bounty.id],
+    );
+
+    const submissionCount = submissions.rows.length;
+    const isClientViewer = request.user.userId === bounty.creator_id || request.user.role === "admin";
+    const isFreelancerViewer = request.user.role === "freelancer";
+
+    const visibleSubmissions = isClientViewer
+      ? submissions.rows
+      : submissions.rows.filter((item) => item.freelancer_id === request.user?.userId);
+
+    const activeSubmissionCount = submissions.rows.filter((item) =>
+      ["submitted", "validating", "awaiting_ci", "in_progress", "passed", "disputed"].includes(item.status),
+    ).length;
+
+    const activity = buildBountyActivity({
+      bounty,
+      submissions: submissions.rows,
+      milestones: milestones.rows,
+    });
+
+    return response.status(200).json({
+      bounty,
+      creator: creator.rows[0] ?? null,
+      milestones: milestones.rows,
+      submissions: visibleSubmissions,
+      submissions_count: submissionCount,
+      active_submission_count: activeSubmissionCount,
+      viewer: {
+        role: request.user.role,
+        user_id: request.user.userId,
+        is_client: isClientViewer,
+        is_freelancer: isFreelancerViewer,
+      },
+      activity,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/:id", validateParams(idParamSchema), async (request, response, next) => {
   try {
     const bounty = await getBountyById(request.params.id);
@@ -464,6 +722,12 @@ router.post(
       if (bounty.creator_id === request.user.userId) {
         throw new AppError(403, 403, "XC-001: Creator cannot accept own bounty");
       }
+      if (bounty.max_freelancers === 1 && bounty.status === "in_progress") {
+        throw new AppError(409, 409, "SC-C-007: This bounty is taken");
+      }
+      if (!["open", "in_progress"].includes(bounty.status)) {
+        throw new AppError(409, 409, "Bounty is not accepting freelancers right now");
+      }
 
       const submission = await acceptBountyWithRowLock({
         bountyId: bounty.id,
@@ -539,20 +803,36 @@ async function getBountyByIdempotencyKey(idempotencyKey: string) {
 }
 
 async function verifyGitHubAppInstalled(owner: string, repo: string) {
+  const strictGitHubChecks =
+    process.env.GITHUB_VERIFY_STRICT === "true" && process.env.HACKATHON_MODE !== "true";
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
+    if (!strictGitHubChecks || process.env.NODE_ENV !== "production") {
+      return true;
+    }
     throw new AppError(400, 400, "GH-C-001: GITHUB_TOKEN is required for repository verification");
   }
 
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/installation`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "BountyEscrow-AI",
-    },
-  });
+  try {
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/installation`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "BountyEscrow-AI",
+      },
+    });
 
-  return response.ok;
+    if (!response.ok && (!strictGitHubChecks || process.env.NODE_ENV !== "production")) {
+      return true;
+    }
+
+    return response.ok;
+  } catch {
+    if (!strictGitHubChecks || process.env.NODE_ENV !== "production") {
+      return true;
+    }
+    return false;
+  }
 }
 
 async function checkGitHubActionsWorkflows(owner: string, repo: string) {
@@ -596,6 +876,101 @@ function decodeCursor(cursor?: string) {
   } catch {
     return null;
   }
+}
+
+function buildBountyActivity(input: {
+  bounty: BountyRow;
+  submissions: Array<{
+    id: string;
+    status: string;
+    ci_status: string;
+    ai_score: number | null;
+    payout_status: string | null;
+    dispute_id: string | null;
+    created_at: string;
+    updated_at: string;
+  }>;
+  milestones: Array<{ id: string; status: string; updated_at: string; order_index: number }>;
+}) {
+  const events: Array<{ key: string; label: string; at: string; detail?: string }> = [];
+
+  events.push({
+    key: `created:${input.bounty.id}`,
+    label: "Bounty Created",
+    at: input.bounty.created_at.toISOString(),
+  });
+
+  if (input.bounty.escrow_locked) {
+    events.push({
+      key: `funded:${input.bounty.id}`,
+      label: "Bounty Funded",
+      at: input.bounty.updated_at.toISOString(),
+    });
+  }
+
+  for (const submission of input.submissions) {
+    events.push({
+      key: `accepted:${submission.id}`,
+      label: "Freelancer Accepted",
+      at: submission.created_at,
+    });
+    events.push({
+      key: `submitted:${submission.id}`,
+      label: "Work Submitted",
+      at: submission.created_at,
+    });
+
+    if (submission.ci_status === "passed") {
+      events.push({
+        key: `ci-pass:${submission.id}`,
+        label: "CI Passed",
+        at: submission.updated_at,
+      });
+    }
+    if (["failed", "timeout", "skipped_abuse"].includes(submission.ci_status)) {
+      events.push({
+        key: `ci-fail:${submission.id}`,
+        label: "CI Failed",
+        at: submission.updated_at,
+        detail: submission.ci_status,
+      });
+    }
+    if (submission.ai_score !== null) {
+      events.push({
+        key: `ai-score:${submission.id}`,
+        label: "AI Scored",
+        at: submission.updated_at,
+      });
+    }
+    if (submission.payout_status === "completed") {
+      events.push({
+        key: `payout:${submission.id}`,
+        label: "Payout Released",
+        at: submission.updated_at,
+      });
+    }
+    if (submission.dispute_id) {
+      events.push({
+        key: `dispute:${submission.id}`,
+        label: "Bounty Disputed",
+        at: submission.updated_at,
+      });
+    }
+  }
+
+  for (const milestone of input.milestones) {
+    if (milestone.status === "paid") {
+      events.push({
+        key: `milestone-paid:${milestone.id}`,
+        label: `Milestone ${milestone.order_index + 1} Paid`,
+        at: milestone.updated_at,
+      });
+    }
+  }
+
+  return events
+    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+    .slice(0, 100);
 }
 
 export default router;

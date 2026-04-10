@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
-import { listBountiesRequest, meRequest } from "../../lib/api";
+import { listBountiesRequest, listMyBountiesRequest, meRequest, meStatsRequest } from "../../lib/api";
 import { useRealtimeChannel } from "../../lib/realtime-client";
 import { useAuthStore } from "../../store/auth-store";
 import { Button, Card, PageIntro, Pill, ProgressBar } from "../../components/ui/primitives";
 
 type DashboardBounty = {
   id: string;
+  creator_id?: string;
   title: string;
   status: string;
   total_amount: string;
@@ -24,10 +25,27 @@ type DashboardProfile = {
   };
 };
 
+type DashboardStats = {
+  active_bounties?: number;
+  completed_bounties?: number;
+  disputed_bounties?: number;
+  escrow_total?: string;
+  reputation?: number;
+};
+
+function normalizeDashboardError(message: string) {
+  const text = message.toLowerCase();
+  if (text.includes("database unavailable") || text.includes("cannot reach api server")) {
+    return "Backend is unavailable. Start API and verify database connection, then refresh.";
+  }
+  return message;
+}
+
 export default function DashboardPage() {
   const { token, user, hydrate } = useAuthStore();
   const [bounties, setBounties] = useState<DashboardBounty[]>([]);
   const [profile, setProfile] = useState<DashboardProfile | null>(null);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,20 +61,40 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [profileData, bountyList] = await Promise.all([
+      const normalizedRole = String(user?.role ?? "").toLowerCase();
+      const bountyRequest = normalizedRole === "client"
+        ? listMyBountiesRequest(token, { limit: 25 })
+        : listBountiesRequest({ status: "open", limit: 25 });
+
+      const [profileData, statsData, bountyList] = await Promise.allSettled([
         meRequest(token),
-        listBountiesRequest({ limit: 25 }),
+        meStatsRequest(token),
+        bountyRequest,
       ]);
 
-      setProfile(profileData as DashboardProfile);
-      const payload = bountyList as { data?: DashboardBounty[] };
-      setBounties(payload.data ?? []);
+      if (profileData.status === "fulfilled") {
+        setProfile(profileData.value as DashboardProfile);
+      }
+      if (statsData.status === "fulfilled") {
+        setStats(statsData.value as DashboardStats);
+      }
+      if (bountyList.status === "fulfilled") {
+        const payload = bountyList.value as { data?: DashboardBounty[] };
+        setBounties(payload.data ?? []);
+      }
+
+      const failed = [profileData, statsData, bountyList].find((entry) => entry.status === "rejected") as
+        | PromiseRejectedResult
+        | undefined;
+      if (failed) {
+        setError(normalizeDashboardError((failed.reason as Error).message));
+      }
     } catch (requestError) {
-      setError((requestError as Error).message);
+      setError(normalizeDashboardError((requestError as Error).message));
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, user?.role]);
 
   useEffect(() => {
     void loadDashboard();
@@ -69,11 +107,11 @@ export default function DashboardPage() {
     },
   });
 
-  const activeBounties = bounties.filter((item) => item.status === "open" || item.status === "in_progress").length;
-  const completedBounties = bounties.filter((item) => item.status === "completed").length;
-  const disputedBounties = bounties.filter((item) => item.status === "disputed").length;
-  const reputation = Number(profile?.user?.reputation_score ?? 0);
-  const escrowTotal = bounties.reduce((sum, item) => sum + Number(item.total_amount ?? "0"), 0);
+  const activeBounties = Number(stats?.active_bounties ?? bounties.filter((item) => item.status === "open" || item.status === "in_progress").length);
+  const completedBounties = Number(stats?.completed_bounties ?? bounties.filter((item) => item.status === "completed").length);
+  const disputedBounties = Number(stats?.disputed_bounties ?? bounties.filter((item) => item.status === "disputed").length);
+  const reputation = Number(stats?.reputation ?? profile?.user?.reputation_score ?? 0);
+  const escrowTotal = Number(stats?.escrow_total ?? bounties.reduce((sum, item) => sum + Number(item.total_amount ?? "0"), 0));
   const role = String(user?.role ?? profile?.user?.role ?? "").toLowerCase();
   const isClient = role === "client";
 
@@ -155,9 +193,15 @@ export default function DashboardPage() {
           <h2 className="text-lg font-semibold">Quick Actions</h2>
           <p className="mt-1 text-sm text-[#4b4b4b]">Navigate directly to the new dashboard routes.</p>
           <div className="mt-4 space-y-3">
-            <Button asChild>
-              <Link href="/bounties/create">Create Bounty</Link>
-            </Button>
+            {isClient ? (
+              <Button asChild>
+                <Link href="/bounties/create">Create Bounty</Link>
+              </Button>
+            ) : (
+              <Button asChild>
+                <Link href="/dashboard/freelancers">Browse Marketplace</Link>
+              </Button>
+            )}
             <Button asChild variant="secondary">
               <Link href="/dashboard/bounties">Browse Bounties</Link>
             </Button>

@@ -16,6 +16,7 @@ interface RateWindow {
 
 const limiterStore = new Map<string, RateWindow>();
 const ACCESS_TOKEN_SECRET = process.env.JWT_ACCESS_SECRET ?? "dev-access-secret";
+const HACKATHON_MODE = process.env.HACKATHON_MODE === "true";
 
 function resolvePrincipal(request: Request) {
   if (request.user?.userId) {
@@ -66,6 +67,10 @@ export function getGitHubIpRangeKey(request: Request) {
 
 export function createRateLimiter(options: RateLimiterOptions) {
   return (request: Request, response: Response, next: NextFunction) => {
+    if (HACKATHON_MODE) {
+      return next();
+    }
+
     const key = options.keyGenerator(request);
     if (!key) {
       return next();

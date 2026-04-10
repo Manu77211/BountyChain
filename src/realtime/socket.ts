@@ -39,6 +39,33 @@ interface AuthenticatedSocketData {
   sessionId: string;
 }
 
+interface ProjectJoinAck {
+  ok: boolean;
+  message?: string;
+}
+
+interface ProjectSendAck {
+  ok: boolean;
+  message?: string;
+}
+
+interface ProjectMessagePayload {
+  projectId?: string;
+  content?: string;
+  fileUrl?: string;
+}
+
+interface ProjectMessageRow {
+  id: string;
+  bounty_id: string;
+  sender_id: string;
+  content: string;
+  file_url: string | null;
+  created_at: string;
+  sender_name: string;
+  sender_role: string;
+}
+
 let ioSingleton: Server | null = null;
 
 export function initializeRealtime(server: HttpServer) {
@@ -106,6 +133,123 @@ export function initializeRealtime(server: HttpServer) {
     }
 
     socket.join(userRoom(auth.userId));
+
+    socket.on("project:join", async (projectId: string, callback?: (ack: ProjectJoinAck) => void) => {
+      const targetProjectId = String(projectId ?? "").trim();
+      if (!targetProjectId) {
+        callback?.({ ok: false, message: "Missing projectId" });
+        return;
+      }
+
+      const canJoin = await canAccessBounty(auth.userId, auth.role, targetProjectId);
+      if (!canJoin) {
+        callback?.({ ok: false, message: "Forbidden" });
+        return;
+      }
+
+      socket.join(bountyRoom(targetProjectId));
+      callback?.({ ok: true });
+    });
+
+    socket.on("join", async (roomName: string, callback?: (ack: ProjectJoinAck) => void) => {
+      const normalized = String(roomName ?? "").trim();
+      if (!normalized.startsWith("bounty:")) {
+        callback?.({ ok: false, message: "Unsupported room" });
+        return;
+      }
+
+      const bountyId = normalized.slice("bounty:".length).trim();
+      if (!bountyId) {
+        callback?.({ ok: false, message: "Missing bounty id" });
+        return;
+      }
+
+      const canJoin = await canAccessBounty(auth.userId, auth.role, bountyId);
+      if (!canJoin) {
+        callback?.({ ok: false, message: "Forbidden" });
+        return;
+      }
+
+      socket.join(normalized);
+      callback?.({ ok: true });
+    });
+
+    socket.on("leave", (roomName: string, callback?: (ack: ProjectJoinAck) => void) => {
+      const normalized = String(roomName ?? "").trim();
+      if (!normalized) {
+        callback?.({ ok: false, message: "Missing room" });
+        return;
+      }
+      socket.leave(normalized);
+      callback?.({ ok: true });
+    });
+
+    socket.on(
+      "project:message:send",
+      async (payload: ProjectMessagePayload, callback?: (ack: ProjectSendAck) => void) => {
+        const projectId = String(payload?.projectId ?? "").trim();
+        const content = String(payload?.content ?? "").trim();
+        const fileUrl = String(payload?.fileUrl ?? "").trim();
+
+        if (!projectId || !content) {
+          callback?.({ ok: false, message: "projectId and content are required" });
+          return;
+        }
+
+        if (content.length > 5000) {
+          callback?.({ ok: false, message: "Message exceeds 5000 characters" });
+          return;
+        }
+
+        const canSend = await canAccessBounty(auth.userId, auth.role, projectId);
+        if (!canSend) {
+          callback?.({ ok: false, message: "Forbidden" });
+          return;
+        }
+
+        const inserted = await dbQuery<ProjectMessageRow>(
+          `
+            INSERT INTO bounty_messages (bounty_id, sender_id, content, file_url)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id,
+                      bounty_id,
+                      sender_id,
+                      content,
+                      file_url,
+                      created_at::text,
+                      (
+                        SELECT COALESCE(NULLIF(u.display_name, ''), NULLIF(u.email, ''), u.wallet_address)
+                        FROM users u
+                        WHERE u.id = sender_id
+                      ) AS sender_name,
+                      (
+                        SELECT u.role::text
+                        FROM users u
+                        WHERE u.id = sender_id
+                      ) AS sender_role
+          `,
+          [projectId, auth.userId, content, fileUrl || null],
+        );
+
+        const row = inserted.rows[0];
+        const message = {
+          id: row.id,
+          projectId: row.bounty_id,
+          senderId: row.sender_id,
+          content: row.content,
+          fileUrl: row.file_url,
+          createdAt: row.created_at,
+          sender: {
+            id: row.sender_id,
+            name: row.sender_name,
+            role: row.sender_role === "client" ? "CLIENT" : "FREELANCER",
+          },
+        };
+
+        io.to(bountyRoom(projectId)).emit("project:message:new", message);
+        callback?.({ ok: true });
+      },
+    );
 
     socket.on("join:bounty", async (payload: { bounty_id?: string }) => {
       const bountyId = String(payload?.bounty_id ?? "").trim();
@@ -218,11 +362,22 @@ async function canAccessBounty(userId: string, role: UserRole, bountyId: string)
     `
       SELECT b.id
       FROM bounties b
-      LEFT JOIN submissions s ON s.bounty_id = b.id
       WHERE b.id = $1
         AND (
           b.creator_id = $2
-          OR s.freelancer_id = $2
+          OR EXISTS (
+            SELECT 1
+            FROM submissions s
+            WHERE s.bounty_id = b.id
+              AND s.freelancer_id = $2
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM project_applications pa
+            WHERE pa.bounty_id = b.id
+              AND pa.freelancer_id = $2
+              AND pa.status = 'selected'
+          )
         )
       LIMIT 1
     `,
