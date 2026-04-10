@@ -37,7 +37,17 @@ function isLocalDevOrigin(origin: string) {
     return false;
   }
 
-  return /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+  // Allow localhost and 127.0.0.1
+  if (/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
+    return true;
+  }
+
+  // Allow local network IPs (192.168.x.x)
+  if (/^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin)) {
+    return true;
+  }
+
+  return false;
 }
 
 app.use((request, _response, next) => {

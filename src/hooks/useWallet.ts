@@ -33,11 +33,17 @@ function normalizeNetwork(value?: string): Network {
 
 function mapWalletError(error: unknown) {
   const message = (error as Error)?.message ?? "Wallet connection failed";
+  console.log("[useWallet mapWalletError] Raw message:", message);
+
+  if (message.includes("AUTH-004")) {
+    console.log("[useWallet mapWalletError] AUTH-004 detected, passing through:", message);
+    return message;
+  }
   if (message.toLowerCase().includes("chainid") && message.toLowerCase().includes("undefined")) {
-    return "AUTH-004: Wallet session corrupted. Please close wallet prompt and retry.";
+    return "AUTH-004: Wallet session corrupted. Close wallet prompt, reload page, disconnect from Pera settings, then try again.";
   }
   if (message.toLowerCase().includes("session currently connected") || message.toLowerCase().includes("session_connect")) {
-    return "AUTH-004: Existing wallet session was stale. Please retry connect.";
+    return "AUTH-004: Wallet session stale. Disconnect this dApp in Pera, reload page, then reconnect.";
   }
   if (message.includes("AUTH-002")) {
     return "AUTH-002: Signature declined. Please approve in your wallet.";
@@ -52,7 +58,7 @@ function mapWalletError(error: unknown) {
     return "AUTH-005: Wallet connected, but signature verification is still required.";
   }
   if (message.includes("AUTH-004")) {
-    return "AUTH-004: Connection lost. Reconnecting...";
+    return "AUTH-004: Wallet session expired/corrupted. Disconnect this dApp in Pera and retry.";
   }
   return message;
 }

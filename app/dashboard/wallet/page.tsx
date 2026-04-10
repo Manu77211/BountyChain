@@ -1,9 +1,9 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { listMyProjectApplicationsRequest, listProjectsRequest, meRequest } from "../../../lib/api";
+import { listMyProjectApplicationsRequest, listProjectsRequest, meStatsRequest } from "../../../lib/api";
 import { useAuthStore } from "../../../store/auth-store";
 import { Button, Card, PageIntro, Pill } from "../../../components/ui/primitives";
 
@@ -21,8 +21,9 @@ type WalletProject = {
   milestones?: WalletMilestone[];
 };
 
-type WalletProfile = {
-  walletBalance?: number;
+type WalletStats = {
+  wallet_balance_algo?: number;
+  wallet_balance_available?: boolean;
 };
 
 type FreelancerApplicationEntry = {
@@ -36,6 +37,7 @@ export default function DashboardWalletPage() {
   const { token, user, hydrate } = useAuthStore();
   const [balance, setBalance] = useState(0);
   const [projects, setProjects] = useState<WalletProject[]>([]);
+  const [balanceAvailable, setBalanceAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,8 +55,8 @@ export default function DashboardWalletPage() {
       setError(null);
       try {
         const isFreelancer = String(user?.role ?? "").toUpperCase() === "FREELANCER";
-        const [profile, rawProjects] = await Promise.all([
-          meRequest(token),
+        const [stats, rawProjects] = await Promise.all([
+          meStatsRequest(token),
           isFreelancer ? listMyProjectApplicationsRequest(token) : listProjectsRequest(token),
         ]);
 
@@ -65,8 +67,9 @@ export default function DashboardWalletPage() {
               .filter((entry): entry is WalletProject => Boolean(entry))
           : ((rawProjects as WalletProject[]) ?? []);
 
-        const typedProfile = profile as WalletProfile;
-        setBalance(typedProfile.walletBalance ?? 0);
+        const typedStats = stats as WalletStats;
+        setBalance(Number(typedStats.wallet_balance_algo ?? 0));
+        setBalanceAvailable(typedStats.wallet_balance_available !== false);
         setProjects(projectList);
       } catch (requestError) {
         setError((requestError as Error).message);
@@ -109,7 +112,8 @@ export default function DashboardWalletPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="p-5">
           <p className="text-sm text-[#4b4b4b]">Current Balance</p>
-          <p className="mt-2 text-3xl font-semibold">${balance.toFixed(2)}</p>
+          <p className="mt-2 text-3xl font-semibold">{balance.toFixed(6)} ALGO</p>
+          {!balanceAvailable ? <p className="mt-1 text-xs text-[#8f1515]">Unable to fetch live on-chain balance right now.</p> : null}
         </Card>
         <Card className="p-5">
           <p className="text-sm text-[#4b4b4b]">Locked</p>
@@ -155,4 +159,3 @@ export default function DashboardWalletPage() {
     </motion.section>
   );
 }
-

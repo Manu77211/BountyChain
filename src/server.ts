@@ -74,7 +74,7 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   logEvent("info", "API server started", {
     event_type: "api_server_started",
     port: PORT,

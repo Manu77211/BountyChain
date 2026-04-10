@@ -50,8 +50,14 @@ export class AlgorandService {
   }
 
   async getWalletBalanceMicroAlgo(walletAddress: string) {
-    const account = await this.client.accountInformation(walletAddress).do();
-    return BigInt(account.amount ?? 0);
+    try {
+      const account = await this.client.accountInformation(walletAddress).do();
+      return BigInt(account.amount ?? 0);
+    } catch {
+      const indexed = await this.indexer.lookupAccountByID(walletAddress).do();
+      const amount = Number((indexed.account as { amount?: number } | undefined)?.amount ?? 0);
+      return BigInt(amount);
+    }
   }
 
   async assertWalletHasEscrowBalance(walletAddress: string, totalAmount: bigint, feeBudget: bigint) {

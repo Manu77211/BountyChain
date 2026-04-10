@@ -1364,7 +1364,7 @@ export async function challengeDisputeArbitratorRequest(
   return response.json();
 }
 
-export async function updateMeRequest(token: string, payload: { email?: string }) {
+export async function updateMeRequest(token: string, payload: { email?: string; wallet_address?: string }) {
   const response = await safeFetch(`${API_BASE_URL}/users/me`, {
     method: "PATCH",
     headers: {

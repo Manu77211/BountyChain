@@ -1,17 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { Menu, MessageSquare } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { LogOut, Menu, MessageSquare } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import { GlobalSearch } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
 import { WalletChip } from "./WalletChip";
 import { getPageTitle } from "./utils";
+import { useAuthStore } from "../../../store/auth-store";
 
 export function Topbar({ token, onOpenMobileMenu }: { token: string | null; onOpenMobileMenu: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { logout } = useAuthStore();
   const title = getPageTitle(pathname);
   const network = (process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet").toUpperCase();
+
+  function onLogout() {
+    logout();
+    router.replace("/login");
+  }
 
   return (
     <header className="sticky top-0 z-40 h-14 border-b border-border bg-surface-1/80 backdrop-blur-md">
@@ -44,6 +52,15 @@ export function Topbar({ token, onOpenMobileMenu }: { token: string | null; onOp
           </span>
           <NotificationBell token={token} />
           <WalletChip token={token} />
+          <button
+            type="button"
+            onClick={onLogout}
+            className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-border bg-surface-1 px-3 text-text-primary hover:bg-surface-3"
+            aria-label="Logout"
+          >
+            <LogOut size={14} />
+            <span className="hidden text-xs font-semibold sm:inline">Logout</span>
+          </button>
         </div>
       </div>
     </header>

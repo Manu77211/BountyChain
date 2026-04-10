@@ -3,11 +3,15 @@ import { z } from "zod";
 import { dbQuery } from "../../lib/db/client";
 import { requireAuth } from "../middleware/auth";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate";
+import { isValidAlgorandAddress, normalizeWalletAddress } from "../services/wallet";
+import { AlgorandService } from "../services/algorand";
 
 const router = Router();
+const algorandService = new AlgorandService();
 
 const updateProfileSchema = z.object({
   email: z.string().email().optional(),
+  wallet_address: z.string().optional(),
 });
 
 const userIdParamsSchema = z.object({
@@ -850,9 +854,10 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
     const profile = await dbQuery<{
       role: string;
       reputation_score: number;
+      wallet_address: string | null;
     }>(
       `
-        SELECT role, reputation_score
+        SELECT role, reputation_score, wallet_address
         FROM users
         WHERE id = $1
           AND deleted_at IS NULL
@@ -912,6 +917,17 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
       [request.user.userId, profile.rows[0].role],
     );
 
+    let walletBalanceMicroAlgo = BigInt(0);
+    let walletBalanceAvailable = true;
+    if (profile.rows[0].wallet_address) {
+      try {
+        walletBalanceMicroAlgo = await algorandService.getWalletBalanceMicroAlgo(profile.rows[0].wallet_address);
+      } catch {
+        walletBalanceMicroAlgo = BigInt(0);
+        walletBalanceAvailable = false;
+      }
+    }
+
     return response.status(200).json({
       role: profile.rows[0].role,
       reputation: profile.rows[0].reputation_score,
@@ -919,6 +935,9 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
       completed_bounties: Number(counts.rows[0]?.completed_count ?? 0),
       disputed_bounties: Number(counts.rows[0]?.disputed_count ?? 0),
       escrow_total: counts.rows[0]?.escrow_total ?? "0",
+      wallet_balance_microalgo: walletBalanceMicroAlgo.toString(),
+      wallet_balance_algo: Number(walletBalanceMicroAlgo) / 1_000_000,
+      wallet_balance_available: walletBalanceAvailable,
     });
   } catch (error) {
     return next(error);
@@ -982,15 +1001,50 @@ router.patch("/me", requireAuth, validateBody(updateProfileSchema), async (reque
       });
     }
 
+    const walletInput = typeof request.body.wallet_address === "string" ? request.body.wallet_address.trim() : "";
+    let normalizedWallet: string | null = null;
+
+    if (walletInput.length > 0) {
+      normalizedWallet = normalizeWalletAddress(walletInput);
+      if (!isValidAlgorandAddress(normalizedWallet)) {
+        return response.status(400).json({
+          error: "Invalid wallet",
+          code: 400,
+          detail: "wallet_address is not a valid Algorand address",
+        });
+      }
+
+      const existingWalletOwner = await dbQuery<{ id: string }>(
+        `
+          SELECT id
+          FROM users
+          WHERE wallet_address = $1
+            AND id <> $2
+            AND deleted_at IS NULL
+          LIMIT 1
+        `,
+        [normalizedWallet, request.user.userId],
+      );
+
+      if ((existingWalletOwner.rowCount ?? 0) > 0) {
+        return response.status(409).json({
+          error: "Conflict",
+          code: 409,
+          detail: "wallet_address is already linked to another account",
+        });
+      }
+    }
+
     const sql = `
       UPDATE users
-      SET email = COALESCE($1, email)
-      WHERE id = $2
+      SET email = COALESCE($1, email),
+          wallet_address = COALESCE($2, wallet_address)
+      WHERE id = $3
         AND deleted_at IS NULL
       RETURNING id, email, wallet_address, role, reputation_score, is_sanctions_flagged, is_banned, created_at, updated_at
     `;
 
-    const updated = await dbQuery(sql, [request.body.email ?? null, request.user.userId]);
+    const updated = await dbQuery(sql, [request.body.email ?? null, normalizedWallet, request.user.userId]);
     return response.status(200).json({ user: updated.rows[0] });
   } catch (error) {
     return next(error);

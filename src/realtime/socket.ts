@@ -82,9 +82,27 @@ let ioSingleton: Server | null = null;
 export function initializeRealtime(server: HttpServer) {
   const io = new Server(server, {
     cors: {
-      origin: (process.env.CORS_ORIGINS ?? "http://localhost:3000")
-        .split(",")
-        .map((value) => value.trim()),
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+
+        const allowedOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:3000")
+          .split(",")
+          .map((o) => o.trim());
+
+        const isAllowed =
+          allowedOrigins.includes(origin) ||
+          /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ||
+          /^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin);
+
+        if (isAllowed) {
+          callback(null, true);
+        } else {
+          callback(new Error("CORS not allowed"));
+        }
+      },
       credentials: true,
     },
   });

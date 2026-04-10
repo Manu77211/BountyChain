@@ -6,8 +6,10 @@ import {
   disconnectSessionRequest,
   getProfileSummaryRequest,
   meRequest,
+  meStatsRequest,
   updateMeRequest,
 } from "../../lib/api";
+import { connectPeraWallet } from "../../lib/pera-wallet";
 import { AppShell } from "../../src/components/layout/AppShell";
 import { Protected } from "../../components/protected";
 import { Button, Card, Input, PageIntro, Pill } from "../../components/ui/primitives";
@@ -41,6 +43,11 @@ type SummaryResponse = {
     total_earned: string;
   };
   disputes_count: number;
+};
+
+type ProfileStatsResponse = {
+  wallet_balance_algo?: number;
+  wallet_balance_available?: boolean;
 };
 
 type UpdateMeResponse = {
@@ -99,16 +106,35 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<MeResponse | null>(null);
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [email, setEmail] = useState("");
+  const [walletAddress, setWalletAddress] = useState("");
   const [showWallet, setShowWallet] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [connectingPera, setConnectingPera] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [sessionDropped, setSessionDropped] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [walletMessage, setWalletMessage] = useState<string | null>(null);
+  const [walletBalanceAlgo, setWalletBalanceAlgo] = useState(0);
+  const [walletBalanceAvailable, setWalletBalanceAvailable] = useState(true);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  const refreshWalletBalance = useCallback(async () => {
+    if (!token) {
+      return;
+    }
+
+    try {
+      const stats = (await meStatsRequest(token)) as ProfileStatsResponse;
+      setWalletBalanceAlgo(Number(stats.wallet_balance_algo ?? 0));
+      setWalletBalanceAvailable(stats.wallet_balance_available !== false);
+    } catch {
+      setWalletBalanceAvailable(false);
+    }
+  }, [token]);
 
   const loadOverview = useCallback(async () => {
     if (!token) {
@@ -119,13 +145,17 @@ export default function ProfilePage() {
     setError(null);
 
     try {
-      const [profileResponse, summaryResponse] = await Promise.all([
+      const [profileResponse, summaryResponse, statsResponse] = await Promise.all([
         meRequest(token) as Promise<MeResponse>,
         getProfileSummaryRequest(token) as Promise<SummaryResponse>,
+        meStatsRequest(token) as Promise<ProfileStatsResponse>,
       ]);
       setProfile(profileResponse);
       setSummary(summaryResponse);
+      setWalletBalanceAlgo(Number(statsResponse.wallet_balance_algo ?? 0));
+      setWalletBalanceAvailable(statsResponse.wallet_balance_available !== false);
       setEmail(profileResponse.user.email ?? "");
+      setWalletAddress(profileResponse.user.wallet_address ?? "");
       setSessionDropped(false);
     } catch (requestError) {
       const detail = (requestError as Error).message;
@@ -144,7 +174,7 @@ export default function ProfilePage() {
     void loadOverview();
   }, [loadOverview]);
 
-  async function onSaveEmail() {
+  async function onSaveProfile() {
     if (!token) {
       return;
     }
@@ -154,7 +184,11 @@ export default function ProfilePage() {
     try {
       const response = (await updateMeRequest(token, {
         email: email.trim() || undefined,
+        wallet_address: walletAddress.trim() || undefined,
       })) as UpdateMeResponse;
+
+      setEmail(response.user.email ?? "");
+      setWalletAddress(response.user.wallet_address ?? "");
 
       setProfile((current) => {
         if (!current) {
@@ -169,10 +203,51 @@ export default function ProfilePage() {
           wallet_linked: Boolean(response.user.wallet_address),
         };
       });
+
+      await refreshWalletBalance();
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onConnectPera() {
+    if (!token) {
+      return;
+    }
+
+    setConnectingPera(true);
+    setWalletMessage("Connecting to Pera Wallet...");
+    setError(null);
+
+    try {
+      const connectedAddress = await connectPeraWallet();
+      const response = (await updateMeRequest(token, {
+        wallet_address: connectedAddress,
+      })) as UpdateMeResponse;
+
+      setWalletAddress(response.user.wallet_address ?? connectedAddress);
+      setProfile((current) => {
+        if (!current) {
+          return {
+            user: response.user,
+            wallet_linked: Boolean(response.user.wallet_address),
+          };
+        }
+        return {
+          ...current,
+          user: response.user,
+          wallet_linked: Boolean(response.user.wallet_address),
+        };
+      });
+
+      await refreshWalletBalance();
+      setWalletMessage("Wallet provider selected. Manual wallet address saved in profile is used for account balance and explorer links.");
+    } catch (requestError) {
+      setWalletMessage((requestError as Error).message || "Unable to connect Pera wallet.");
+    } finally {
+      setConnectingPera(false);
     }
   }
 
@@ -245,8 +320,11 @@ export default function ProfilePage() {
                       {role === "CLIENT" ? "Client account" : "Freelancer account"} | Member since {new Date(profile.user.created_at).toLocaleDateString()}
                     </p>
                     <p className="mt-2 text-sm text-[#4b4b4b]">
-                      Wallet: {showWallet ? profile.user.wallet_address ?? "Not linked" : maskWallet(profile.user.wallet_address)}
+                      Wallet: {showWallet ? (walletAddress || profile.user.wallet_address || "Not linked") : maskWallet(walletAddress || profile.user.wallet_address)}
                     </p>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">Wallet Balance: {walletBalanceAlgo.toFixed(6)} ALGO</p>
+                    {!walletBalanceAvailable ? <p className="mt-1 text-xs text-[#8f1515]">Unable to fetch live wallet balance right now.</p> : null}
+                    {walletMessage ? <p className="mt-1 text-xs text-[#4b4b4b]">{walletMessage}</p> : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Pill text={role || "USER"} />
@@ -260,12 +338,23 @@ export default function ProfilePage() {
                     <label className="mb-1 block text-sm font-semibold">Email</label>
                     <Input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@domain.com" />
                   </div>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <Button onClick={() => void onSaveEmail()} disabled={saving}>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold">Wallet Address</label>
+                    <Input
+                      value={walletAddress}
+                      onChange={(event) => setWalletAddress(event.target.value)}
+                      placeholder="Paste Algorand wallet address"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2 md:col-span-2">
+                    <Button onClick={() => void onSaveProfile()} disabled={saving}>
                       {saving ? "Saving..." : "Save Profile"}
                     </Button>
                     <Button variant="secondary" onClick={() => setShowWallet((current) => !current)}>
                       {showWallet ? "Hide Wallet" : "Show Wallet"}
+                    </Button>
+                    <Button variant="secondary" onClick={() => void onConnectPera()} disabled={connectingPera}>
+                      {connectingPera ? "Connecting..." : "Connect Pera"}
                     </Button>
                     <Button variant="secondary" onClick={() => void onDisconnectSession()} disabled={disconnecting}>
                       {disconnecting ? "Disconnecting..." : "Disconnect Session"}

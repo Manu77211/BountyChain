@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
 import { listBountiesRequest, listMyBountiesRequest, meRequest, meStatsRequest } from "../../lib/api";
@@ -43,12 +44,18 @@ function normalizeDashboardError(message: string) {
 }
 
 export default function DashboardPage() {
-  const { token, user, hydrate } = useAuthStore();
+  const router = useRouter();
+  const { token, user, hydrate, logout } = useAuthStore();
   const [bounties, setBounties] = useState<DashboardBounty[]>([]);
   const [profile, setProfile] = useState<DashboardProfile | null>(null);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  function onLogout() {
+    logout();
+    router.replace("/login");
+  }
 
   useEffect(() => {
     hydrate();
@@ -215,6 +222,7 @@ export default function DashboardPage() {
             <Button asChild variant="secondary">
               <Link href="/profile">Profile & Wallet</Link>
             </Button>
+            <Button variant="secondary" onClick={onLogout}>Logout</Button>
           </div>
         </Card>
       </div>

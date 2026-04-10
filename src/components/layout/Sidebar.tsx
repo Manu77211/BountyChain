@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   ChevronLeft,
@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Layers,
   MessageSquare,
+  LogOut,
   Plus,
   Scale,
   Shield,
@@ -71,9 +72,15 @@ function BrandLogo({ collapsed }: { collapsed: boolean }) {
 
 export function Sidebar({ activeDisputes = 0 }: { activeDisputes?: number }) {
   const pathname = usePathname();
-  const { token, user } = useAuthStore();
+  const router = useRouter();
+  const { token, user, logout } = useAuthStore();
   const { sidebarCollapsed, toggleSidebarCollapsed } = useUiStore();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
+
+  function onLogout() {
+    logout();
+    router.replace("/login");
+  }
 
   useEffect(() => {
     async function loadWallet() {
@@ -225,6 +232,16 @@ export function Sidebar({ activeDisputes = 0 }: { activeDisputes?: number }) {
           <span className="h-2 w-2 rounded-full bg-[#0f7b44]" />
           {!sidebarCollapsed ? <span className="truncate">{truncateAddress(walletAddress, 6, 4)}</span> : null}
         </div>
+
+        <button
+          type="button"
+          onClick={onLogout}
+          className={`flex w-full items-center gap-2 rounded-none border border-border bg-surface-1 px-2 py-2 text-xs font-semibold text-text-primary hover:bg-surface-3 ${sidebarCollapsed ? "justify-center" : ""}`}
+          aria-label="Logout"
+        >
+          <LogOut size={14} />
+          {!sidebarCollapsed ? <span>Logout</span> : null}
+        </button>
 
         <button
           type="button"
