@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { dbQuery } from "../../lib/db/client";
 import type { CiStatus, ScoringMode } from "../../lib/db/types";
 import { parseGitHubRepo } from "./wallet";
+import { emitToBounty } from "../realtime/socket";
 
 export interface ValidationDispatcher {
   send: (eventName: string, data: Record<string, unknown>) => Promise<void>;
@@ -272,6 +273,33 @@ async function persistCiStatus(context: ValidationContext, workflow: WorkflowSta
     `,
     [workflow.ciStatus, workflow.runId, workflow.source, submissionStatus, context.submission.id],
   );
+
+  if (workflow.ciStatus === "passed") {
+    emitToBounty(context.bounty.id, "bounty:ci_passed", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      ci_status: workflow.ciStatus,
+      ci_run_id: workflow.runId,
+    });
+    return;
+  }
+
+  if (workflow.ciStatus === "running" || workflow.ciStatus === "pending") {
+    emitToBounty(context.bounty.id, "bounty:ci_running", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      ci_status: workflow.ciStatus,
+      ci_run_id: workflow.runId,
+    });
+    return;
+  }
+
+  emitToBounty(context.bounty.id, "bounty:ci_failed", {
+    bounty_id: context.bounty.id,
+    submission_id: context.submission.id,
+    ci_status: workflow.ciStatus,
+    ci_run_id: workflow.runId,
+  });
 }
 
 function resolveSubmissionStatusForCi(ciStatus: CiStatus) {
@@ -302,11 +330,24 @@ async function emitAiScoringRequested(
     scoring_mode: context.bounty.scoring_mode,
     event_hash: eventHash,
   });
+
+  emitToBounty(context.bounty.id, "bounty:scoring", {
+    bounty_id: context.bounty.id,
+    submission_id: context.submission.id,
+    ci_status: ciStatus,
+    ci_run_id: ciRunId,
+  });
 }
 
 async function notifyCiFailure(context: ValidationContext, ciStatus: CiStatus) {
   const detail = `CI validation failed with status ${ciStatus}`;
   const recipients = [context.submission.freelancer_id, context.bounty.creator_id];
+
+  emitToBounty(context.bounty.id, "bounty:ci_failed", {
+    bounty_id: context.bounty.id,
+    submission_id: context.submission.id,
+    ci_status: ciStatus,
+  });
 
   for (const userId of recipients) {
     await dbQuery(

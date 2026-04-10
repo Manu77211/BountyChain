@@ -1,3 +1,4 @@
+import "../lib/load-env";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { dbPool } from "../lib/db/client";
@@ -5,6 +6,10 @@ import { dbPool } from "../lib/db/client";
 const SEED_PATH = path.resolve(process.cwd(), "db", "seeds", "0001_seed.sql");
 
 export async function seedDatabase() {
+  if (!dbPool) {
+    throw new Error("DATABASE_URL is required to seed the database.");
+  }
+
   const sql = await readFile(SEED_PATH, "utf8");
   const client = await dbPool.connect();
   try {
@@ -22,7 +27,9 @@ export async function seedDatabase() {
 
 async function main() {
   await seedDatabase();
-  await dbPool.end();
+  if (dbPool) {
+    await dbPool.end();
+  }
 }
 
 main().catch((error) => {

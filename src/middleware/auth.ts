@@ -16,15 +16,20 @@ export interface AccessTokenClaims {
 export async function requireAuth(request: Request, response: Response, next: NextFunction) {
   try {
     const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length)
+      : null;
+    const cookieToken = (request.cookies?.access_token as string | undefined) ?? null;
+    const token = bearerToken ?? cookieToken;
+
+    if (!token) {
       return response.status(401).json({
         error: "Unauthorized",
         code: 401,
-        detail: "Missing bearer token",
+        detail: "Missing access token",
       });
     }
 
-    const token = authHeader.slice("Bearer ".length);
     const decoded = jwt.verify(token, ACCESS_TOKEN_SECRET) as AccessTokenClaims;
 
     if (decoded.type !== "access") {

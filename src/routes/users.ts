@@ -2,7 +2,6 @@ import { Router } from "express";
 import { z } from "zod";
 import { dbQuery } from "../../lib/db/client";
 import { requireAuth } from "../middleware/auth";
-import { perUserRateLimiter } from "../middleware/rateLimiter";
 import { validateBody } from "../middleware/validate";
 
 const router = Router();
@@ -11,7 +10,7 @@ const updateProfileSchema = z.object({
   email: z.string().email().optional(),
 });
 
-router.get("/me", requireAuth, perUserRateLimiter, async (request, response, next) => {
+router.get("/me", requireAuth, async (request, response, next) => {
   try {
     if (!request.user) {
       return response.status(401).json({

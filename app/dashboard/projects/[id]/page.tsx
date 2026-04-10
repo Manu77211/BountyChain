@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
@@ -23,14 +23,80 @@ type MilestoneFormState = {
   notes: string;
 };
 
+type SubmissionView = {
+  id: string;
+  status: string;
+  fileUrl?: string;
+  notes?: string;
+  clientRating?: number;
+  clientFeedback?: string;
+};
+
+type MilestoneView = {
+  id: string;
+  title: string;
+  amount?: number;
+  status: string;
+  submissions?: SubmissionView[];
+};
+
+type ParticipantView = {
+  id: string;
+  name: string;
+  sanctionsStatus?: string;
+};
+
+type ValidationReportView = {
+  aiScore?: number;
+  clientRating?: number;
+  finalScore?: number;
+  decision?: string;
+  clientSanctionsStatus?: string;
+  freelancerSanctionsStatus?: string;
+  breakdown?: {
+    missingElements?: string[];
+  };
+};
+
+type ApplicantView = {
+  id: string;
+  message?: string;
+  proposedAmount?: number;
+  estimatedDays?: number;
+  deliverables?: string;
+  freelancer?: {
+    id: string;
+    name: string;
+    rating?: number;
+    trustScore?: number;
+  };
+};
+
+type FreelancerOption = {
+  id: string;
+  name: string;
+  rating?: number;
+};
+
+type ProjectDetailView = {
+  id: string;
+  title: string;
+  status: string;
+  draftApproved?: boolean;
+  client: ParticipantView;
+  freelancer?: ParticipantView | null;
+  milestones?: MilestoneView[];
+  validationReports?: ValidationReportView[];
+};
+
 export default function DashboardProjectDetailPage() {
   const params = useParams<{ id: string }>();
   const projectId = params.id;
   const { token, user, hydrate } = useAuthStore();
 
-  const [project, setProject] = useState<any>(null);
-  const [freelancers, setFreelancers] = useState<any[]>([]);
-  const [applicants, setApplicants] = useState<any[]>([]);
+  const [project, setProject] = useState<ProjectDetailView | null>(null);
+  const [freelancers, setFreelancers] = useState<FreelancerOption[]>([]);
+  const [applicants, setApplicants] = useState<ApplicantView[]>([]);
   const [selectedFreelancerId, setSelectedFreelancerId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,13 +104,13 @@ export default function DashboardProjectDetailPage() {
   const [ratingInputs, setRatingInputs] = useState<Record<string, string>>({});
   const [feedbackInputs, setFeedbackInputs] = useState<Record<string, string>>({});
   const [milestoneForms, setMilestoneForms] = useState<Record<string, MilestoneFormState>>({});
-  const [validationResult, setValidationResult] = useState<any>(null);
+  const [validationResult, setValidationResult] = useState<ValidationReportView | null>(null);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
-  async function loadProject() {
+  const loadProject = useCallback(async () => {
     if (!token || !projectId) {
       return;
     }
@@ -53,25 +119,25 @@ export default function DashboardProjectDetailPage() {
     setError(null);
 
     try {
-      const data = await getProjectRequest(token, projectId);
+      const data = (await getProjectRequest(token, projectId)) as ProjectDetailView;
       setProject(data);
 
       if (user?.role === "CLIENT" && !data.freelancer) {
-        const freelancerData = await listFreelancersRequest({});
+        const freelancerData = (await listFreelancersRequest({})) as FreelancerOption[];
         setFreelancers(freelancerData);
-        const applicantData = await listProjectApplicantsRequest(token, projectId);
+        const applicantData = (await listProjectApplicantsRequest(token, projectId)) as ApplicantView[];
         setApplicants(applicantData);
       } else {
         setApplicants([]);
       }
 
-      const initialForms = (data.milestones ?? []).reduce((acc: Record<string, MilestoneFormState>, milestone: any) => {
+      const initialForms = (data.milestones ?? []).reduce((acc: Record<string, MilestoneFormState>, milestone) => {
         acc[milestone.id] = { fileUrl: "", notes: "" };
         return acc;
       }, {});
       setMilestoneForms(initialForms);
 
-      const initialRatings = (data.milestones ?? []).reduce((acc: Record<string, string>, milestone: any) => {
+      const initialRatings = (data.milestones ?? []).reduce((acc: Record<string, string>, milestone) => {
         const latestSubmission = milestone.submissions?.[0];
         if (latestSubmission?.id) {
           acc[latestSubmission.id] = latestSubmission.clientRating ? String(latestSubmission.clientRating) : "70";
@@ -80,7 +146,7 @@ export default function DashboardProjectDetailPage() {
       }, {});
       setRatingInputs(initialRatings);
 
-      const initialFeedback = (data.milestones ?? []).reduce((acc: Record<string, string>, milestone: any) => {
+      const initialFeedback = (data.milestones ?? []).reduce((acc: Record<string, string>, milestone) => {
         const latestSubmission = milestone.submissions?.[0];
         if (latestSubmission?.id) {
           acc[latestSubmission.id] = latestSubmission.clientFeedback ?? "";
@@ -97,11 +163,11 @@ export default function DashboardProjectDetailPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [token, projectId, user?.role]);
 
   useEffect(() => {
     void loadProject();
-  }, [token, projectId, user?.role]);
+  }, [loadProject]);
 
   const finalScore = validationResult?.finalScore ?? 0;
   const requirementMatch = Math.min(100, Math.max(0, finalScore + 8));
@@ -129,7 +195,7 @@ export default function DashboardProjectDetailPage() {
       return 0;
     }
 
-    const approved = project.milestones.filter((item: any) => item.status === "APPROVED").length;
+    const approved = project.milestones.filter((item) => item.status === "APPROVED").length;
     return (approved / project.milestones.length) * 100;
   }, [project]);
 
@@ -324,7 +390,7 @@ export default function DashboardProjectDetailPage() {
                     <p className="font-medium text-[#121212]">{application.freelancer?.name}</p>
                     <p className="text-xs text-[#4b4b4b]">Rating {application.freelancer?.rating} | Trust {application.freelancer?.trustScore}</p>
                     {application.message ? (
-                      <p className="mt-1 text-xs text-[#5b5b5b]">"{application.message}"</p>
+                      <p className="mt-1 text-xs text-[#5b5b5b]">&quot;{application.message}&quot;</p>
                     ) : null}
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-[#5b5b5b]">
                       {application.proposedAmount ? <span>Budget ${Number(application.proposedAmount).toFixed(2)}</span> : null}
@@ -368,7 +434,9 @@ export default function DashboardProjectDetailPage() {
           ) : null}
         </div>
         <div className="mt-4 space-y-3">
-          {(project.milestones ?? []).map((milestone: any) => (
+          {(project.milestones ?? []).map((milestone) => {
+            const latestSubmission = milestone.submissions?.[0];
+            return (
             <div key={milestone.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -416,27 +484,27 @@ export default function DashboardProjectDetailPage() {
                 </form>
               ) : null}
 
-              {user?.role === "CLIENT" && milestone.submissions?.[0] ? (
+              {user?.role === "CLIENT" && latestSubmission ? (
                 <div className="mt-3 space-y-2 rounded-lg border border-[#121212] bg-[#f5f5f5] p-3">
                   <p className="text-xs text-[#4b4b4b]">
-                    Latest submission status: {milestone.submissions[0].status}
+                    Latest submission status: {latestSubmission.status}
                   </p>
-                  {milestone.submissions[0].fileUrl ? (
+                  {latestSubmission.fileUrl ? (
                     <p className="text-xs text-[#4b4b4b]">
-                      File: <a className="text-sky-300 underline" href={milestone.submissions[0].fileUrl} target="_blank" rel="noreferrer">Open submission artifact</a>
+                      File: <a className="text-sky-300 underline" href={latestSubmission.fileUrl} target="_blank" rel="noreferrer">Open submission artifact</a>
                     </p>
                   ) : null}
-                  {milestone.submissions[0].notes ? (
-                    <p className="text-xs text-[#4b4b4b]">Notes: {milestone.submissions[0].notes}</p>
+                  {latestSubmission.notes ? (
+                    <p className="text-xs text-[#4b4b4b]">Notes: {latestSubmission.notes}</p>
                   ) : null}
                   <Textarea
                     rows={2}
                     placeholder="Comment and request changes"
-                    value={feedbackInputs[milestone.submissions[0].id] ?? ""}
+                    value={feedbackInputs[latestSubmission.id] ?? ""}
                     onChange={(event) =>
                       setFeedbackInputs((prev) => ({
                         ...prev,
-                        [milestone.submissions[0].id]: event.target.value,
+                        [latestSubmission.id]: event.target.value,
                       }))
                     }
                   />
@@ -445,23 +513,23 @@ export default function DashboardProjectDetailPage() {
                       type="number"
                       min="0"
                       max="100"
-                      value={ratingInputs[milestone.submissions[0].id] ?? "70"}
+                      value={ratingInputs[latestSubmission.id] ?? "70"}
                       onChange={(event) =>
                         setRatingInputs((prev) => ({
                           ...prev,
-                          [milestone.submissions[0].id]: event.target.value,
+                          [latestSubmission.id]: event.target.value,
                         }))
                       }
                     />
                     <Button
-                      onClick={() => void onRateSubmission(milestone.submissions[0].id)}
-                      disabled={saving || milestone.submissions[0].status !== "VALIDATED"}
+                      onClick={() => void onRateSubmission(latestSubmission.id)}
+                      disabled={saving || latestSubmission.status !== "VALIDATED"}
                     >
                       {saving ? "Scoring..." : "Rate + Decide"}
                     </Button>
                     <Button
                       variant="secondary"
-                      onClick={() => void onRequestChanges(milestone.submissions[0].id)}
+                      onClick={() => void onRequestChanges(latestSubmission.id)}
                       disabled={saving}
                     >
                       {saving ? "Updating..." : "Request Changes"}
@@ -470,15 +538,16 @@ export default function DashboardProjectDetailPage() {
                 </div>
               ) : null}
 
-              {user?.role === "FREELANCER" && milestone.submissions?.[0]?.clientFeedback ? (
+              {user?.role === "FREELANCER" && latestSubmission?.clientFeedback ? (
                 <div className="mt-3 rounded-lg border border-[#121212] bg-[#fff3cd] p-3">
                   <p className="text-xs text-[#8a5a00]">
-                    Client requested changes: {milestone.submissions[0].clientFeedback}
+                    Client requested changes: {latestSubmission.clientFeedback}
                   </p>
                 </div>
               ) : null}
             </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
 

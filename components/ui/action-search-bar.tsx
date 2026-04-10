@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -84,25 +84,24 @@ const allActions: Action[] = [
 
 function ActionSearchBar({ actions = allActions }: { actions?: Action[] }) {
   const [query, setQuery] = useState("");
-  const [result, setResult] = useState<SearchResult | null>(null);
   const [isFocused, setIsFocused] = useState(false);
   const [selectedAction, setSelectedAction] = useState<Action | null>(null);
   const debouncedQuery = useDebounce(query, 200);
 
-  useEffect(() => {
+  const result: SearchResult | null = useMemo(() => {
     if (!isFocused) {
-      setResult(null);
-      return;
+      return null;
     }
 
     if (!debouncedQuery) {
-      setResult({ actions });
-      return;
+      return { actions };
     }
 
     const normalizedQuery = debouncedQuery.toLowerCase().trim();
-    const filteredActions = actions.filter((action) => action.label.toLowerCase().includes(normalizedQuery));
-    setResult({ actions: filteredActions });
+    const filteredActions = actions.filter((action) =>
+      action.label.toLowerCase().includes(normalizedQuery),
+    );
+    return { actions: filteredActions };
   }, [debouncedQuery, isFocused, actions]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {

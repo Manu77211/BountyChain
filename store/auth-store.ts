@@ -1,7 +1,8 @@
 "use client";
 
 import { create } from "zustand";
-import { AuthPayload, loginRequest, registerRequest } from "../lib/api";
+import { AuthPayload, loginRequest, registerRequest, walletLoginRequest } from "../lib/api";
+import { connectPeraWallet, signLoginMessageWithPera } from "../lib/pera-wallet";
 import { AUTH_STORAGE_KEY, LEGACY_AUTH_STORAGE_KEY } from "../lib/project-config";
 
 type User = AuthPayload["user"];
@@ -22,7 +23,21 @@ interface AuthState {
     portfolio?: string[];
   }) => Promise<void>;
   login: (payload: { email: string; password: string }) => Promise<void>;
+  loginWithPera: (role: "CLIENT" | "FREELANCER") => Promise<void>;
   logout: () => void;
+}
+
+function persistAuthState(data: AuthPayload) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      JSON.stringify({ token: data.token, user: data.user }),
+    );
+  }
+}
+
+function getWalletLoginMessage(walletAddress: string) {
+  return `BountyEscrow wallet login\nAddress: ${walletAddress}\nTimestamp: ${new Date().toISOString()}`;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -57,12 +72,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       const data = await registerRequest(payload);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(
-          AUTH_STORAGE_KEY,
-          JSON.stringify({ token: data.token, user: data.user }),
-        );
-      }
+      persistAuthState(data);
       set({ token: data.token, user: data.user, loading: false });
     } catch (error) {
       set({ loading: false, error: (error as Error).message });
@@ -73,12 +83,28 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       const data = await loginRequest(payload);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(
-          AUTH_STORAGE_KEY,
-          JSON.stringify({ token: data.token, user: data.user }),
-        );
-      }
+      persistAuthState(data);
+      set({ token: data.token, user: data.user, loading: false });
+    } catch (error) {
+      set({ loading: false, error: (error as Error).message });
+      throw error;
+    }
+  },
+  loginWithPera: async (role) => {
+    set({ loading: true, error: null });
+    try {
+      const walletAddress = await connectPeraWallet();
+      const signedMessage = getWalletLoginMessage(walletAddress);
+      const signature = await signLoginMessageWithPera(walletAddress, signedMessage);
+
+      const data = await walletLoginRequest({
+        wallet_address: walletAddress,
+        signed_message: signedMessage,
+        signature,
+        role: role === "CLIENT" ? "client" : "freelancer",
+      });
+
+      persistAuthState(data);
       set({ token: data.token, user: data.user, loading: false });
     } catch (error) {
       set({ loading: false, error: (error as Error).message });

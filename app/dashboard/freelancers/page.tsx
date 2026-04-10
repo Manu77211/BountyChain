@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
@@ -24,14 +25,29 @@ import {
   Select,
 } from "../../../components/ui/primitives";
 
+type FreelancerListItem = {
+  id: string;
+  name: string;
+  rating: number;
+  trustScore: number;
+  experience?: string;
+  skills?: string[];
+};
+
+type ProjectListItem = {
+  id: string;
+  title: string;
+  freelancerId?: string | null;
+};
+
 export default function DashboardFreelancersPage() {
   const router = useRouter();
   const { token, user, hydrate } = useAuthStore();
 
   const [skills, setSkills] = useState("");
   const [rating, setRating] = useState("0");
-  const [freelancers, setFreelancers] = useState<any[]>([]);
-  const [projects, setProjects] = useState<any[]>([]);
+  const [freelancers, setFreelancers] = useState<FreelancerListItem[]>([]);
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,18 +65,18 @@ export default function DashboardFreelancersPage() {
     }
   }, [user?.role, router]);
 
-  async function fetchFreelancers() {
+  const fetchFreelancers = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await listFreelancersRequest({
+      const data = (await listFreelancersRequest({
         skills,
         rating: Number(rating),
-      });
+      })) as FreelancerListItem[];
       setFreelancers(data);
       if (token && user?.role === "CLIENT") {
-        const projectList = await listProjectsRequest(token);
-        setProjects(projectList.filter((project: any) => !project.freelancerId));
+        const projectList = (await listProjectsRequest(token)) as ProjectListItem[];
+        setProjects(projectList.filter((project) => !project.freelancerId));
       }
       setSuccess(null);
     } catch (e) {
@@ -68,13 +84,13 @@ export default function DashboardFreelancersPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [skills, rating, token, user?.role]);
 
   useEffect(() => {
     if (user?.role === "CLIENT") {
       void fetchFreelancers();
     }
-  }, [user?.role, token]);
+  }, [user?.role, fetchFreelancers]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -156,7 +172,7 @@ export default function DashboardFreelancersPage() {
                   <div className="space-y-3">
                     <p className="text-sm text-[#3f3f3f]">No unassigned bounties available. Create a bounty first.</p>
                     <Button asChild variant="secondary" className="w-full">
-                      <a href="/dashboard/bounties">Go to Bounties</a>
+                      <Link href="/dashboard/bounties">Go to Bounties</Link>
                     </Button>
                   </div>
                 ) : (

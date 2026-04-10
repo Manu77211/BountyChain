@@ -1,10 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { Router, type Response } from "express";
 import jwt from "jsonwebtoken";
 import { dbQuery } from "../../lib/db/client";
 import type { UserRole } from "../../lib/db/types";
 import { validateBody } from "../middleware/validate";
-import { walletLoginSchema } from "../schemas/auth.schema";
+import { loginSchema, registerSchema, walletLoginSchema } from "../schemas/auth.schema";
 import { screenWalletAndLog } from "../middleware/sanctions";
 import { isValidAlgorandAddress, normalizeWalletAddress, verifyWalletSignature } from "../services/wallet";
 
@@ -16,6 +16,293 @@ const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET ?? "dev-refresh-secr
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60;
 const REFRESH_COOKIE_NAME = "refresh_token";
+const ACCESS_COOKIE_NAME = "access_token";
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const ALGORAND_BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+const loginAttemptStore = new Map<string, { count: number; lockUntil: number }>();
+
+function getAttemptKey(ip: string) {
+  return `ip:${ip}`;
+}
+
+function checkLockout(key: string) {
+  const state = loginAttemptStore.get(key);
+  if (!state) {
+    return null;
+  }
+
+  const now = Date.now();
+  if (state.lockUntil > now) {
+    return Math.ceil((state.lockUntil - now) / 1000);
+  }
+
+  loginAttemptStore.delete(key);
+  return null;
+}
+
+function recordFailedAttempt(key: string) {
+  const current = loginAttemptStore.get(key) ?? { count: 0, lockUntil: 0 };
+  const nextCount = current.count + 1;
+  const lockUntil = nextCount >= MAX_LOGIN_ATTEMPTS ? Date.now() + LOGIN_LOCKOUT_MS : 0;
+  loginAttemptStore.set(key, { count: nextCount, lockUntil });
+}
+
+function clearFailedAttempts(key: string) {
+  loginAttemptStore.delete(key);
+}
+
+function toClientRole(role: UserRole): "CLIENT" | "FREELANCER" {
+  return role === "client" ? "CLIENT" : "FREELANCER";
+}
+
+function toDbRole(role: "CLIENT" | "FREELANCER" | "client" | "freelancer"): UserRole {
+  return role.toUpperCase() === "CLIENT" ? "client" : "freelancer";
+}
+
+function generateSyntheticWalletAddress() {
+  const bytes = randomBytes(58);
+  return Array.from(bytes, (value) => ALGORAND_BASE32[value % ALGORAND_BASE32.length]).join("");
+}
+
+function hashPassword(password: string) {
+  const salt = randomBytes(16).toString("hex");
+  const derived = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${derived}`;
+}
+
+function verifyPassword(password: string, encodedHash: string | null) {
+  if (!encodedHash || !encodedHash.includes(":")) {
+    return false;
+  }
+
+  const [salt, expectedHex] = encodedHash.split(":");
+  if (!salt || !expectedHex) {
+    return false;
+  }
+
+  const actual = Buffer.from(scryptSync(password, salt, 64).toString("hex"), "hex");
+  const expected = Buffer.from(expectedHex, "hex");
+  if (actual.length !== expected.length) {
+    return false;
+  }
+
+  return timingSafeEqual(actual, expected);
+}
+
+function formatAuthPayload(input: {
+  accessToken: string;
+  user: {
+    id: string;
+    email: string | null;
+    wallet_address: string;
+    role: UserRole;
+    reputation_score: number;
+    display_name: string | null;
+  };
+}) {
+  return {
+    token: input.accessToken,
+    user: {
+      id: input.user.id,
+      name: input.user.display_name ?? input.user.email ?? "BountyEscrow User",
+      email: input.user.email ?? "",
+      role: toClientRole(input.user.role),
+      skills: [],
+      rating: Number((input.user.reputation_score / 20).toFixed(2)),
+      trustScore: input.user.reputation_score,
+      experience: "",
+      portfolio: [],
+    },
+  };
+}
+
+router.post("/register", validateBody(registerSchema), async (request, response, next) => {
+  try {
+    const email = String(request.body.email).trim().toLowerCase();
+    const name = String(request.body.name).trim();
+    const role = toDbRole(request.body.role as "CLIENT" | "FREELANCER");
+    const passwordHash = hashPassword(String(request.body.password));
+
+    const existingUser = await dbQuery<{ id: string }>(
+      "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL LIMIT 1",
+      [email],
+    );
+
+    if ((existingUser.rowCount ?? 0) > 0) {
+      return response.status(409).json({
+        error: "Conflict",
+        code: 409,
+        detail: "AUTH-006: Account already exists for this email",
+      });
+    }
+
+    const walletAddress = generateSyntheticWalletAddress();
+    const insertedUser = await dbQuery<{
+      id: string;
+      email: string | null;
+      wallet_address: string;
+      role: UserRole;
+      reputation_score: number;
+      display_name: string | null;
+    }>(
+      `
+        INSERT INTO users (email, wallet_address, role, display_name, password_hash)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, email, wallet_address, role, reputation_score, display_name
+      `,
+      [email, walletAddress, role, name, passwordHash],
+    );
+
+    const user = insertedUser.rows[0];
+    const sanctionCheck = await screenWalletAndLog(user.wallet_address, "auth.register", user.id);
+    if (sanctionCheck.flagged) {
+      await dbQuery(
+        "UPDATE users SET is_sanctions_flagged = TRUE, updated_at = NOW() WHERE id = $1",
+        [user.id],
+      );
+      return response.status(403).json({
+        error: "Forbidden",
+        code: 403,
+        detail: "CL-001: User requires compliance review",
+      });
+    }
+
+    const sessionId = randomUUID();
+    const accessToken = signAccessToken({
+      userId: user.id,
+      role: user.role,
+      walletAddress: user.wallet_address,
+      sessionId,
+    });
+    const refreshToken = signRefreshToken({
+      userId: user.id,
+      role: user.role,
+      walletAddress: user.wallet_address,
+      sessionId,
+    });
+
+    await dbQuery(
+      `
+        INSERT INTO auth_sessions (id, user_id, wallet_address, refresh_token_hash, expires_at)
+        VALUES ($1, $2, $3, $4, NOW() + INTERVAL '7 days')
+      `,
+      [sessionId, user.id, user.wallet_address, hashToken(refreshToken)],
+    );
+
+  setAccessCookie(response, accessToken);
+    setRefreshCookie(response, refreshToken);
+    return response.status(201).json(formatAuthPayload({ accessToken, user }));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/login", validateBody(loginSchema), async (request, response, next) => {
+  try {
+    const email = String(request.body.email).trim().toLowerCase();
+    const password = String(request.body.password);
+    const attemptKey = getAttemptKey(request.ip ?? "unknown");
+    const retryAfter = checkLockout(attemptKey);
+
+    if (retryAfter) {
+      response.setHeader("Retry-After", String(retryAfter));
+      return response.status(429).json({
+        error: "Rate limit exceeded",
+        code: 429,
+        detail: "AUTH-007: Too many failed login attempts. Retry later.",
+      });
+    }
+
+    const userResult = await dbQuery<{
+      id: string;
+      email: string | null;
+      wallet_address: string;
+      role: UserRole;
+      reputation_score: number;
+      is_sanctions_flagged: boolean;
+      is_banned: boolean;
+      password_hash: string | null;
+      display_name: string | null;
+    }>(
+      `
+        SELECT id,
+               email,
+               wallet_address,
+               role,
+               reputation_score,
+               is_sanctions_flagged,
+               is_banned,
+               password_hash,
+               display_name
+        FROM users
+        WHERE email = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [email],
+    );
+
+    if ((userResult.rowCount ?? 0) === 0) {
+      recordFailedAttempt(attemptKey);
+      return response.status(401).json({
+        error: "Unauthorized",
+        code: 401,
+        detail: "AUTH-004: Invalid email or password",
+      });
+    }
+
+    const user = userResult.rows[0];
+    const validPassword = verifyPassword(password, user.password_hash);
+    if (!validPassword) {
+      recordFailedAttempt(attemptKey);
+      return response.status(401).json({
+        error: "Unauthorized",
+        code: 401,
+        detail: "AUTH-004: Invalid email or password",
+      });
+    }
+
+    if (user.is_banned || user.is_sanctions_flagged) {
+      return response.status(403).json({
+        error: "Forbidden",
+        code: 403,
+        detail: "AUTH-005: Account is restricted",
+      });
+    }
+
+    clearFailedAttempts(attemptKey);
+
+    const sessionId = randomUUID();
+    const accessToken = signAccessToken({
+      userId: user.id,
+      role: user.role,
+      walletAddress: user.wallet_address,
+      sessionId,
+    });
+    const refreshToken = signRefreshToken({
+      userId: user.id,
+      role: user.role,
+      walletAddress: user.wallet_address,
+      sessionId,
+    });
+
+    await dbQuery(
+      `
+        INSERT INTO auth_sessions (id, user_id, wallet_address, refresh_token_hash, expires_at)
+        VALUES ($1, $2, $3, $4, NOW() + INTERVAL '7 days')
+      `,
+      [sessionId, user.id, user.wallet_address, hashToken(refreshToken)],
+    );
+
+  setAccessCookie(response, accessToken);
+    setRefreshCookie(response, refreshToken);
+    return response.status(200).json(formatAuthPayload({ accessToken, user }));
+  } catch (error) {
+    return next(error);
+  }
+});
 
 router.post("/wallet-login", validateBody(walletLoginSchema), async (request, response, next) => {
   try {
@@ -81,6 +368,7 @@ router.post("/wallet-login", validateBody(walletLoginSchema), async (request, re
     `;
     await dbQuery(insertSessionSql, [sessionId, user.id, walletAddress, hashToken(refreshToken)]);
 
+  setAccessCookie(response, accessToken);
     setRefreshCookie(response, refreshToken);
     return response.status(200).json({
       access_token: accessToken,
@@ -181,6 +469,7 @@ router.post("/refresh", async (request, response, next) => {
     `;
     await dbQuery(updateSessionSql, [hashToken(nextRefresh), activeSession.id]);
 
+  setAccessCookie(response, nextAccess);
     setRefreshCookie(response, nextRefresh);
     return response.status(200).json({
       access_token: nextAccess,
@@ -205,6 +494,12 @@ router.post("/disconnect", async (request, response, next) => {
     }
 
     response.clearCookie(REFRESH_COOKIE_NAME, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      path: "/",
+    });
+    response.clearCookie(ACCESS_COOKIE_NAME, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
@@ -270,6 +565,16 @@ function setRefreshCookie(response: Response, refreshToken: string) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
     maxAge: REFRESH_TTL_SECONDS * 1000,
+    path: "/",
+  });
+}
+
+function setAccessCookie(response: Response, accessToken: string) {
+  response.cookie(ACCESS_COOKIE_NAME, accessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: ACCESS_TTL_SECONDS * 1000,
     path: "/",
   });
 }

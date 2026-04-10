@@ -2,16 +2,32 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
-import { listProjectMessagesRequest, listProjectsRequest, meRequest } from "../../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { listBountiesRequest, meRequest } from "../../lib/api";
+import { useRealtimeChannel } from "../../lib/realtime-client";
 import { useAuthStore } from "../../store/auth-store";
 import { Button, Card, PageIntro, Pill, ProgressBar } from "../../components/ui/primitives";
 
+type DashboardBounty = {
+  id: string;
+  title: string;
+  status: string;
+  total_amount: string;
+  deadline: string;
+  scoring_mode: string;
+};
+
+type DashboardProfile = {
+  user?: {
+    reputation_score?: number;
+    role?: string;
+  };
+};
+
 export default function DashboardPage() {
   const { token, user, hydrate } = useAuthStore();
-  const [bounties, setBounties] = useState<any[]>([]);
-  const [recentMessages, setRecentMessages] = useState<any[]>([]);
-  const [profile, setProfile] = useState<any>(null);
+  const [bounties, setBounties] = useState<DashboardBounty[]>([]);
+  const [profile, setProfile] = useState<DashboardProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,86 +35,83 @@ export default function DashboardPage() {
     hydrate();
   }, [hydrate]);
 
-  useEffect(() => {
-    async function load() {
-      if (!token) {
-        return;
-      }
-
-      setLoading(true);
-      setError(null);
-      try {
-        const [profileData, bountyList] = await Promise.all([
-          meRequest(token),
-          listProjectsRequest(token),
-        ]);
-
-        setProfile(profileData);
-        setBounties(bountyList);
-
-        if (bountyList.length > 0) {
-          const firstProjectMessages = await listProjectMessagesRequest(token, bountyList[0].id);
-          setRecentMessages(firstProjectMessages.slice(-5).reverse());
-        } else {
-          setRecentMessages([]);
-        }
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setLoading(false);
-      }
+  const loadDashboard = useCallback(async () => {
+    if (!token) {
+      return;
     }
 
-    void load();
+    setLoading(true);
+    setError(null);
+    try {
+      const [profileData, bountyList] = await Promise.all([
+        meRequest(token),
+        listBountiesRequest({ limit: 25 }),
+      ]);
+
+      setProfile(profileData as DashboardProfile);
+      const payload = bountyList as { data?: DashboardBounty[] };
+      setBounties(payload.data ?? []);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setLoading(false);
+    }
   }, [token]);
 
-  const activeProjects = bounties.filter((item) => item.status === "IN_PROGRESS").length;
-  const completedProjects = bounties.filter((item) => item.status === "COMPLETED").length;
-  const pendingApprovals = bounties.filter((item) => item.status === "IN_PROGRESS" && !item.draftApproved).length;
-  const pendingSubmissions = bounties.filter((item) =>
-    (item.milestones ?? []).some((milestone: any) => milestone.status === "SUBMITTED" || milestone.status === "PENDING"),
-  ).length;
-  const avgTrustScore = profile?.trustScore ?? user?.trustScore ?? 0;
-  const escrowFunds = bounties.reduce((sum, item) => {
-    const total = (item.milestones ?? []).reduce((inner: number, milestone: any) => inner + (milestone.amount ?? 0), 0);
-    return sum + total;
-  }, 0);
-  const earningsEstimate = bounties.reduce((sum, item) => {
-    const approved = (item.milestones ?? [])
-      .filter((milestone: any) => milestone.status === "APPROVED")
-      .reduce((inner: number, milestone: any) => inner + (milestone.amount ?? 0), 0);
-    return sum + approved;
-  }, 0);
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  const realtime = useRealtimeChannel({
+    token,
+    onEvent: () => {
+      void loadDashboard();
+    },
+  });
+
+  const activeBounties = bounties.filter((item) => item.status === "open" || item.status === "in_progress").length;
+  const completedBounties = bounties.filter((item) => item.status === "completed").length;
+  const disputedBounties = bounties.filter((item) => item.status === "disputed").length;
+  const reputation = Number(profile?.user?.reputation_score ?? 0);
+  const escrowTotal = bounties.reduce((sum, item) => sum + Number(item.total_amount ?? "0"), 0);
+  const role = String(user?.role ?? profile?.user?.role ?? "").toLowerCase();
+  const isClient = role === "client";
 
   return (
     <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="space-y-6">
       <PageIntro
-        title={user?.role === "FREELANCER" ? "Freelancer Bounty Overview" : "Client Bounty Overview"}
+        title={isClient ? "Client Dashboard" : "Freelancer Dashboard"}
         subtitle={
-          user?.role === "FREELANCER"
-            ? "Track assigned milestones, delivery quality signals, and payout readiness across active bounties."
-            : "Fund escrow safely, monitor delivery quality, and release payment only through objective validation."
+          isClient
+            ? "Create and fund bounties, monitor validation stages, and handle disputes in realtime."
+            : "Track accepted bounties, CI and scoring status, and payout readiness in realtime."
         }
       />
 
+      {realtime.state === "reconnecting" ? (
+        <Card className="p-4">
+          <p className="text-sm text-[#8f1515]">Reconnecting to live updates...</p>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card className="p-5">
-          <p className="text-sm text-[#4b4b4b]">{user?.role === "FREELANCER" ? "Assigned Bounties" : "Active Bounties"}</p>
-          <p className="mt-2 text-3xl font-semibold">{activeProjects}</p>
+          <p className="text-sm text-[#4b4b4b]">Active Bounties</p>
+          <p className="mt-2 text-3xl font-semibold">{activeBounties}</p>
         </Card>
         <Card className="p-5">
-          <p className="text-sm text-[#4b4b4b]">{user?.role === "FREELANCER" ? "Earnings" : "Funds In Escrow"}</p>
-          <p className="mt-2 text-3xl font-semibold">${(user?.role === "FREELANCER" ? earningsEstimate : escrowFunds).toFixed(2)}</p>
+          <p className="text-sm text-[#4b4b4b]">Funds Tracked</p>
+          <p className="mt-2 text-3xl font-semibold">{escrowTotal.toFixed(0)}</p>
         </Card>
         <Card className="p-5">
-          <p className="text-sm text-[#4b4b4b]">{user?.role === "FREELANCER" ? "Pending Submissions" : "Pending Approvals"}</p>
-          <p className="mt-2 text-3xl font-semibold">{user?.role === "FREELANCER" ? pendingSubmissions : pendingApprovals}</p>
+          <p className="text-sm text-[#4b4b4b]">Disputed</p>
+          <p className="mt-2 text-3xl font-semibold">{disputedBounties}</p>
         </Card>
         <Card className="p-5">
-          <p className="text-sm text-[#4b4b4b]">Trust Score</p>
-          <p className="mt-2 text-3xl font-semibold">{avgTrustScore.toFixed(1)}</p>
+          <p className="text-sm text-[#4b4b4b]">Reputation</p>
+          <p className="mt-2 text-3xl font-semibold">{reputation.toFixed(0)}</p>
           <div className="mt-3">
-            <ProgressBar value={Math.min(100, avgTrustScore)} />
+            <ProgressBar value={Math.min(100, reputation)} />
           </div>
         </Card>
       </div>
@@ -106,36 +119,28 @@ export default function DashboardPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Workflow Snapshot</h2>
-            <Pill text={user?.role === "FREELANCER" ? "Delivery Lens" : "Escrow Lens"} />
+            <h2 className="text-lg font-semibold">Live Bounties</h2>
+            <Pill text={realtime.state} />
           </div>
           {loading ? <p className="mt-4 text-[#4b4b4b]">Loading summary...</p> : null}
           {error ? <p className="mt-4 text-sm text-[#8f1515]">{error}</p> : null}
           {!loading && !error ? (
             <div className="mt-4 space-y-3">
-              {bounties.slice(0, 4).map((project) => {
-                const milestones = project.milestones ?? [];
-                const approvedCount = milestones.filter((item: any) => item.status === "APPROVED").length;
-                const progress = milestones.length > 0 ? (approvedCount / milestones.length) * 100 : 0;
+              {bounties.slice(0, 6).map((bounty) => {
+                const statusProgress = bounty.status === "completed" ? 100 : bounty.status === "disputed" ? 50 : 20;
                 return (
-                  <div key={project.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
+                  <div key={bounty.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="font-medium">{project.title}</p>
-                      <Pill text={project.status} />
+                      <p className="font-medium">{bounty.title}</p>
+                      <Pill text={bounty.status} />
                     </div>
-                    <p className="mt-1 text-xs text-[#4b4b4b]">
-                      {project.client?.name ? `Client ${project.client.name}` : ""}
-                      {project.freelancer?.name ? ` | Freelancer ${project.freelancer.name}` : ""}
-                    </p>
+                    <p className="mt-1 text-xs text-[#4b4b4b]">{new Date(bounty.deadline).toLocaleString()} | {bounty.scoring_mode}</p>
                     <div className="mt-3">
-                      <ProgressBar value={progress} />
+                      <ProgressBar value={statusProgress} />
                     </div>
                     <div className="mt-3 flex gap-2">
                       <Button asChild variant="secondary" className="h-8 px-3 text-xs">
-                        <Link href={`/dashboard/bounties/${project.id}`}>View Details</Link>
-                      </Button>
-                      <Button asChild className="h-8 px-3 text-xs">
-                        <Link href={`/dashboard/chat/${project.id}`}>Open Chat</Link>
+                        <Link href={`/bounties/${bounty.id}`}>View Details</Link>
                       </Button>
                     </div>
                   </div>
@@ -147,30 +152,18 @@ export default function DashboardPage() {
         </Card>
 
         <Card>
-          <h2 className="text-lg font-semibold">Recent Activity</h2>
-          <p className="mt-1 text-sm text-[#4b4b4b]">Latest chat updates and bounty actions.</p>
+          <h2 className="text-lg font-semibold">Quick Actions</h2>
+          <p className="mt-1 text-sm text-[#4b4b4b]">Navigate directly to the new dashboard routes.</p>
           <div className="mt-4 space-y-3">
-            {recentMessages.map((message) => (
-              <div key={message.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
-                <p className="text-xs text-[#4b4b4b]">
-                  {message.sender.name} ({message.sender.role})
-                </p>
-                <p className="mt-1 text-sm text-[#2a2a2a]">{message.content}</p>
-              </div>
-            ))}
-            {!loading && recentMessages.length === 0 ? (
-              <p className="text-sm text-[#4b4b4b]">No activity yet. Start a bounty conversation to populate updates.</p>
-            ) : null}
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
             <Button asChild>
-              <Link href="/dashboard/bounties">{user?.role === "FREELANCER" ? "Go to My Bounties" : "Manage Bounties"}</Link>
+              <Link href="/bounties/create">Create Bounty</Link>
             </Button>
-            {user?.role === "CLIENT" ? (
-              <Button asChild variant="secondary">
-                <Link href="/dashboard/freelancers">Find Freelancer</Link>
-              </Button>
-            ) : null}
+            <Button asChild variant="secondary">
+              <Link href="/dashboard/bounties">Browse Bounties</Link>
+            </Button>
+            <Button asChild variant="secondary">
+              <Link href="/profile">Profile & Wallet</Link>
+            </Button>
           </div>
         </Card>
       </div>
@@ -179,10 +172,10 @@ export default function DashboardPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-sm text-[#4b4b4b]">Completed Bounties</p>
-            <p className="mt-1 text-2xl font-semibold">{completedProjects}</p>
+            <p className="mt-1 text-2xl font-semibold">{completedBounties}</p>
           </div>
           <Button asChild variant="secondary">
-            <Link href="/dashboard/wallet">Open Wallet</Link>
+            <Link href="/profile">Open Profile</Link>
           </Button>
         </div>
       </Card>

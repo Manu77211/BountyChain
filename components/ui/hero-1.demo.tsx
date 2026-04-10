@@ -4,4 +4,6 @@ const DemoOne = () => {
   return <Hero1 />;
 };
 
-export default { DemoOne };
+const HeroOneDemo = { DemoOne };
+
+export default HeroOneDemo;

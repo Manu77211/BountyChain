@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   applyToProjectRequest,
@@ -27,10 +27,30 @@ import {
   Textarea,
 } from "../../../components/ui/primitives";
 
+type MilestoneListItem = {
+  status: string;
+  amount?: number;
+};
+
+type ProjectApplicationPreview = {
+  id: string;
+};
+
+type ProjectListItem = {
+  id: string;
+  title: string;
+  status: string;
+  freelancer?: { name?: string } | null;
+  client?: { name?: string } | null;
+  milestones?: MilestoneListItem[];
+  applications?: ProjectApplicationPreview[];
+  _count?: { applications?: number };
+};
+
 export default function ProjectsPage() {
   const { token, user, hydrate } = useAuthStore();
-  const [projects, setProjects] = useState<any[]>([]);
-  const [openProjects, setOpenProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [openProjects, setOpenProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -53,7 +73,7 @@ export default function ProjectsPage() {
     hydrate();
   }, [hydrate]);
 
-  async function loadProjects() {
+  const loadProjects = useCallback(async () => {
     if (!token) {
       return;
     }
@@ -62,10 +82,10 @@ export default function ProjectsPage() {
     setError(null);
 
     try {
-      const projectList = await listProjectsRequest(token);
+      const projectList = (await listProjectsRequest(token)) as ProjectListItem[];
       setProjects(projectList);
       if (user?.role === "FREELANCER") {
-        const discoverList = await discoverOpenProjectsRequest(token);
+        const discoverList = (await discoverOpenProjectsRequest(token)) as ProjectListItem[];
         setOpenProjects(discoverList);
       } else {
         setOpenProjects([]);
@@ -75,11 +95,11 @@ export default function ProjectsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [token, user?.role]);
 
   useEffect(() => {
     void loadProjects();
-  }, [token, user?.role]);
+  }, [loadProjects]);
 
   const heading = useMemo(() => {
     if (user?.role === "FREELANCER") {
@@ -374,7 +394,7 @@ export default function ProjectsPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         {projects.map((project) => {
           const milestones = project.milestones ?? [];
-          const approved = milestones.filter((item: any) => item.status === "APPROVED").length;
+          const approved = milestones.filter((item) => item.status === "APPROVED").length;
           const progress = milestones.length > 0 ? (approved / milestones.length) * 100 : 0;
 
           return (

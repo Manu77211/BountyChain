@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { dbQuery, withTransaction } from "../../lib/db/client";
 import type { BountyStatus, PayoutStatus, SubmissionStatus } from "../../lib/db/types";
 import { screenWalletAndLog } from "../middleware/sanctions";
+import { emitToBounty, emitToUser } from "../realtime/socket";
 import { AlgorandService, type SplitPayoutShare } from "./algorand";
 import { isValidAlgorandAddress, normalizeWalletAddress } from "./wallet";
 
@@ -386,7 +387,14 @@ async function ensureAssetOptInIfNeeded(precheck: PayoutPrecheckResult, notifier
     return;
   }
 
-  await notifier.emitToUser(precheck.submission.freelancer_id, "opt_in_required", {
+  await notifier.emitToUser(precheck.submission.freelancer_id, "validation:opt_in_required", {
+    code: "SC-F-002",
+    asset_id: assetId,
+    submission_id: precheck.submission.id,
+    bounty_id: precheck.bounty.id,
+  });
+
+  emitToUser(precheck.submission.freelancer_id, "validation:opt_in_required", {
     code: "SC-F-002",
     asset_id: assetId,
     submission_id: precheck.submission.id,
@@ -656,6 +664,14 @@ async function verifyAndFinalizePayouts(
   }
 
   if (mismatch) {
+    emitToBounty(precheck.bounty.id, "payout:mismatch_flagged", {
+      bounty_id: precheck.bounty.id,
+      submission_id: precheck.submission.id,
+      tx_id: txId,
+      expected_amount: expectedTotal.toString(),
+      actual_amount: actualTotal.toString(),
+    });
+
     await dispatcher.send("admin/alert", {
       code: "SC-F-005",
       submission_id: precheck.submission.id,
@@ -704,14 +720,19 @@ async function postPayout(
     );
   });
 
-  await notifier.emitToUser(precheck.submission.freelancer_id, "payout:released", {
+  await notifier.emitToUser(precheck.submission.freelancer_id, "bounty:payout_released", {
     submission_id: precheck.submission.id,
     bounty_id: precheck.bounty.id,
   });
 
-  await notifier.emitToUser(precheck.bounty.creator_id, "payout:released", {
+  await notifier.emitToUser(precheck.bounty.creator_id, "bounty:payout_released", {
     submission_id: precheck.submission.id,
     bounty_id: precheck.bounty.id,
+  });
+
+  emitToBounty(precheck.bounty.id, "bounty:payout_released", {
+    bounty_id: precheck.bounty.id,
+    submission_id: precheck.submission.id,
   });
 
   await dispatcher.send("notification/send", {
@@ -815,6 +836,12 @@ async function handleNoSubmissionExpiry(bounty: DeadlineCandidate, dispatcher: J
     tx_id: refund.txId,
     recipients: [bounty.creator_id],
   });
+
+  emitToBounty(bounty.id, "bounty:expired", {
+    bounty_id: bounty.id,
+    reason: "expired_no_submission",
+    tx_id: refund.txId,
+  });
 }
 
 async function handleExpiredIncomplete(
@@ -867,6 +894,12 @@ async function handleExpiredIncomplete(
     tx_id: refund.txId,
     recipients: [bounty.creator_id, ...freelancerIds],
   });
+
+  emitToBounty(bounty.id, "bounty:expired", {
+    bounty_id: bounty.id,
+    reason: "expired_incomplete",
+    tx_id: refund.txId,
+  });
 }
 
 async function handleAllFailedRefund(
@@ -897,6 +930,12 @@ async function handleAllFailedRefund(
     tx_id: refund.txId,
     recipients: [bounty.creator_id],
     summary,
+  });
+
+  emitToBounty(bounty.id, "bounty:expired", {
+    bounty_id: bounty.id,
+    reason: "expired_all_failed",
+    tx_id: refund.txId,
   });
 }
 

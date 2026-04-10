@@ -9,9 +9,10 @@ import { Button, Card, Input } from "../../components/ui/primitives";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, loading, error, token, hydrate } = useAuthStore();
+  const { login, loginWithPera, loading, error, token, hydrate } = useAuthStore();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [walletRole, setWalletRole] = useState<"CLIENT" | "FREELANCER">("CLIENT");
 
   useEffect(() => {
     hydrate();
@@ -27,6 +28,15 @@ export default function LoginPage() {
     event.preventDefault();
     try {
       await login({ email, password });
+      router.replace("/dashboard");
+    } catch {
+      // Error message is managed in the store.
+    }
+  }
+
+  async function onLoginWithPera() {
+    try {
+      await loginWithPera(walletRole);
       router.replace("/dashboard");
     } catch {
       // Error message is managed in the store.
@@ -60,6 +70,23 @@ export default function LoginPage() {
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Logging in..." : "Login"}
           </Button>
+
+          <div className="rounded-lg border border-[#121212] bg-[#f5f5f5] p-3">
+            <p className="text-sm font-semibold text-[#121212]">Wallet Login (Pera)</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+              <select
+                className="w-full rounded-none border-2 border-[#121212] bg-white px-3 py-2 text-sm"
+                value={walletRole}
+                onChange={(event) => setWalletRole(event.target.value as "CLIENT" | "FREELANCER")}
+              >
+                <option value="CLIENT">Client</option>
+                <option value="FREELANCER">Freelancer</option>
+              </select>
+              <Button type="button" disabled={loading} onClick={() => void onLoginWithPera()}>
+                {loading ? "Connecting..." : "Login with Pera"}
+              </Button>
+            </div>
+          </div>
         </form>
 
         <p className="mt-4 text-sm text-[#3f3f3f]">

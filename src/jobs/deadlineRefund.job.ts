@@ -5,6 +5,7 @@ export const deadlineRefundJob = inngest.createFunction(
   {
     id: "deadline_refund",
     name: "Deadline Refund Job",
+    retries: 2,
   },
   { cron: "0 * * * *" },
   async (context) => {

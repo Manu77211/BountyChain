@@ -11,7 +11,8 @@ export type BountyStatus =
   | "expired_all_failed"
   | "cancelled"
   | "disputed"
-  | "pending_escrow";
+  | "pending_escrow"
+  | "error_escrow_corrupt";
 
 export type ScoringMode = "ai_only" | "ci_only" | "hybrid";
 export type MilestoneStatus = "pending" | "unlocked" | "paid" | "failed";
@@ -42,6 +43,12 @@ export type PayoutStatus = "pending" | "processing" | "completed" | "failed" | "
 
 export type DisputeStatus = "open" | "under_review" | "resolved" | "escalated" | "expired";
 export type DisputeOutcome = "freelancer_wins" | "client_wins" | "split";
+export type DisputeType =
+  | "score_unfair"
+  | "quality_low"
+  | "requirement_mismatch"
+  | "fraud"
+  | "non_delivery";
 export type NotificationType = "email" | "in_app" | "both";
 
 export interface UserRow {
@@ -154,8 +161,12 @@ export interface DisputeRow {
   submission_id: string;
   raised_by: string;
   reason: string;
+  dispute_type: DisputeType;
   status: DisputeStatus;
   outcome: DisputeOutcome | null;
+  score_published_at?: Date | null;
+  settlement_tx_id?: string | null;
+  settlement_payload?: Record<string, unknown>;
   raised_at: Date;
   resolved_at: Date | null;
   escalated_at: Date | null;
@@ -167,9 +178,14 @@ export interface DisputeVoteRow {
   id: string;
   dispute_id: string;
   arbitrator_id: string;
-  vote: DisputeOutcome;
-  justification: string;
+  vote: DisputeOutcome | null;
+  justification: string | null;
   is_challenged: boolean;
+  is_active?: boolean;
+  challenged_by?: string | null;
+  challenge_reason?: string | null;
+  assigned_at?: Date;
+  replaced_at?: Date | null;
   voted_at: Date;
 }
 

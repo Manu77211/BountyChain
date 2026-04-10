@@ -1,19 +1,17 @@
+import "../lib/load-env";
 import http from "node:http";
-import { Server } from "socket.io";
 import app from "./app";
+import { initializeRealtime } from "./realtime/socket";
+import { registerProcessErrorHandlers } from "./middleware/errorHandler";
+import { logEvent } from "./utils/logger";
 
 const PORT = Number(process.env.API_PORT ?? 4000);
 
 const server = http.createServer(app);
-
-const io = new Server(server, {
-  cors: {
-    origin: (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(",").map((value) => value.trim()),
-    credentials: true,
-  },
-});
+const io = initializeRealtime(server);
 
 app.set("io", io);
+registerProcessErrorHandlers(server);
 
 io.on("connection", (socket) => {
   socket.on("disconnect", () => {
@@ -22,5 +20,8 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`BountyEscrow API listening on :${PORT}`);
+  logEvent("info", "API server started", {
+    event_type: "api_server_started",
+    port: PORT,
+  });
 });

@@ -4,6 +4,11 @@ import { ciValidationJob } from "./ciValidation.job";
 import { payoutReleaseJob } from "./payoutRelease.job";
 import { deadlineRefundJob } from "./deadlineRefund.job";
 import { milestoneReleaseJob } from "./milestoneRelease.job";
+import { disputeEscalationJob } from "./disputeEscalation.job";
+import { disputeResolutionJob } from "./disputeResolution.job";
+import { sendNotificationCompatJob, sendNotificationJob } from "./sendNotification.job";
+import { consistencyCheckJob } from "./consistencyCheck.job";
+import { sanctionsSyncJob } from "./sanctionsSync.job";
 
 export const inngestApp = serve({
   client: inngest,
@@ -13,5 +18,11 @@ export const inngestApp = serve({
     payoutReleaseJob,
     deadlineRefundJob,
     milestoneReleaseJob,
+    disputeEscalationJob,
+    disputeResolutionJob,
+    consistencyCheckJob,
+    sanctionsSyncJob,
+    sendNotificationJob,
+    sendNotificationCompatJob,
   ],
 });

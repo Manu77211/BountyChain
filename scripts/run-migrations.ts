@@ -1,3 +1,4 @@
+import "../lib/load-env";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { dbPool } from "../lib/db/client";
@@ -5,6 +6,10 @@ import { dbPool } from "../lib/db/client";
 const MIGRATIONS_DIR = path.resolve(process.cwd(), "db", "migrations");
 
 export async function runMigrations() {
+  if (!dbPool) {
+    throw new Error("DATABASE_URL is required to run migrations.");
+  }
+
   const files = await listMigrationFiles();
   const client = await dbPool.connect();
   try {
@@ -51,7 +56,9 @@ async function listMigrationFiles() {
 
 async function main() {
   await runMigrations();
-  await dbPool.end();
+  if (dbPool) {
+    await dbPool.end();
+  }
 }
 
 main().catch((error) => {

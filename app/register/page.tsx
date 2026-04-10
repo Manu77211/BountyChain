@@ -7,29 +7,29 @@ import { useAuthStore } from "../../store/auth-store";
 import { AuthShell } from "../../components/ui/auth-shell";
 import { Button, Card, Input, Select } from "../../components/ui/primitives";
 
+function getInitialRoleFromQuery(): "CLIENT" | "FREELANCER" {
+  if (typeof window === "undefined") {
+    return "CLIENT";
+  }
+  const queryRole = new URLSearchParams(window.location.search).get("role");
+  if (queryRole === "CLIENT" || queryRole === "FREELANCER") {
+    return queryRole;
+  }
+  return "CLIENT";
+}
+
 export default function RegisterPage() {
   const router = useRouter();
-  const { register, loading, error, token, hydrate } = useAuthStore();
+  const { register, loginWithPera, loading, error, token, hydrate } = useAuthStore();
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"CLIENT" | "FREELANCER">("CLIENT");
+  const [role, setRole] = useState<"CLIENT" | "FREELANCER">(getInitialRoleFromQuery);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const queryRole = new URLSearchParams(window.location.search).get("role");
-    if (queryRole === "CLIENT" || queryRole === "FREELANCER") {
-      setRole(queryRole);
-    }
-  }, []);
 
   useEffect(() => {
     if (token) {
@@ -46,6 +46,15 @@ export default function RegisterPage() {
         password,
         role,
       });
+      router.replace("/dashboard");
+    } catch {
+      // Error message is managed in the store.
+    }
+  }
+
+  async function onRegisterWithPera() {
+    try {
+      await loginWithPera(role);
       router.replace("/dashboard");
     } catch {
       // Error message is managed in the store.
@@ -77,6 +86,10 @@ export default function RegisterPage() {
 
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Creating account..." : "Create account"}
+          </Button>
+
+          <Button type="button" variant="secondary" disabled={loading} className="w-full" onClick={() => void onRegisterWithPera()}>
+            {loading ? "Connecting Wallet..." : "Register with Pera Wallet"}
           </Button>
         </form>
 

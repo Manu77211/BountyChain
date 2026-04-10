@@ -14,4 +14,20 @@ export const walletLoginSchema = z.object({
 
 export const refreshSchema = z.object({}).passthrough();
 
+const registerRoleSchema = z
+  .enum(["CLIENT", "FREELANCER", "client", "freelancer"])
+  .transform((value) => value.toUpperCase() as "CLIENT" | "FREELANCER");
+
+export const registerSchema = z.object({
+  name: z.string().trim().min(2, "name must be at least 2 characters").max(120),
+  email: z.string().trim().email("email must be valid"),
+  password: z.string().min(8, "password must be at least 8 characters"),
+  role: registerRoleSchema,
+});
+
+export const loginSchema = z.object({
+  email: z.string().trim().email("email must be valid"),
+  password: z.string().min(1, "password is required"),
+});
+
 export type WalletLoginInput = z.infer<typeof walletLoginSchema>;

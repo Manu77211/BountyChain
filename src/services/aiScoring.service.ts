@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 import { dbQuery, withTransaction } from "../../lib/db/client";
 import type { CiStatus, ScoringMode } from "../../lib/db/types";
 import { calculateFinalScore } from "../utils/scoreCalculator";
+import { emitToBounty } from "../realtime/socket";
+import { logEvent } from "../utils/logger";
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "llama3-70b-8192";
 const GROQ_TIMEOUT_MS = 30_000;
+const AI_MAX_DIFF_BYTES = Number(process.env.AI_MAX_DIFF_BYTES ?? "200000");
+const AI_MAX_CRITERIA_BYTES = Number(process.env.AI_MAX_CRITERIA_BYTES ?? "12000");
 
 const SYSTEM_PROMPT =
   "You are a senior software engineer evaluating a code submission for a freelance bounty platform. You must evaluate the submission fairly and objectively. You must penalize: excessive non-functional comments, duplicate code patterns, code padding, AI-generated filler text, and mismatched programming languages. You must not penalize: unconventional but valid approaches, different languages if the client permitted them. Return ONLY valid JSON. No preamble. No markdown.";
@@ -82,6 +86,11 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     throw new Error("AI-C-002: acceptance_criteria cannot be empty for AI scoring");
   }
 
+  assertAiInputSizeLimits({
+    acceptanceCriteria: context.bounty.acceptance_criteria,
+    cachedDiff: input.cached_diff,
+  });
+
   if (context.bounty.scoring_mode === "ci_only") {
     const ciOnly = calculateFinalScore({
       scoringMode: "ci_only",
@@ -113,6 +122,15 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
         bounty_id: context.bounty.id,
         final_score: ciOnly.finalScore,
       });
+
+      emitToBounty(context.bounty.id, "bounty:scored", {
+        bounty_id: context.bounty.id,
+        submission_id: context.submission.id,
+        final_score: ciOnly.finalScore,
+        ai_score: null,
+        state: "passed",
+      });
+
       return { state: "passed", ai_score: null, final_score: ciOnly.finalScore };
     }
 
@@ -123,6 +141,15 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
       finalScore: ciOnly.finalScore,
       justification: "CI-only scoring result is below threshold.",
     });
+
+    emitToBounty(context.bounty.id, "bounty:scored", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      final_score: ciOnly.finalScore,
+      ai_score: null,
+      state: "failed",
+    });
+
     return { state: "failed", ai_score: null, final_score: ciOnly.finalScore };
   }
 
@@ -132,6 +159,14 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     context.bounty.scoring_mode !== "ai_only"
   ) {
     await markSubmissionFailedWithoutAi(context.submission.id, context.submission.ci_status);
+    emitToBounty(context.bounty.id, "bounty:scored", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      final_score: null,
+      ai_score: null,
+      state: "ci_failed",
+      ci_status: context.submission.ci_status,
+    });
     return {
       state: "ci_failed",
       detail: "CI status prevents AI scoring",
@@ -145,6 +180,12 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     ciStatus: context.submission.ci_status,
     skippedTestCount: context.submission.skipped_test_count,
     totalTestCount: context.submission.total_test_count,
+  });
+
+  emitToBounty(context.bounty.id, "bounty:scoring", {
+    bounty_id: context.bounty.id,
+    submission_id: context.submission.id,
+    ci_status: context.submission.ci_status,
   });
 
   let rawGroqContent = "";
@@ -199,6 +240,13 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
 
   if (parsedScore.integrity_flag) {
     await notifyAiIntegrityHold(context.submission.id, context.creatorId, parsedScore.justification);
+    emitToBounty(context.bounty.id, "bounty:scored", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      final_score: finalScore.finalScore,
+      ai_score: parsedScore.total_score,
+      state: "held_integrity",
+    });
     return {
       state: "held_integrity",
       ai_score: parsedScore.total_score,
@@ -208,6 +256,13 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
 
   if (languageMismatchRequiresOverride) {
     await notifyLanguageOverrideNeeded(context.submission.id, context.creatorId, parsedScore.language_detected);
+    emitToBounty(context.bounty.id, "bounty:scored", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      final_score: finalScore.finalScore,
+      ai_score: parsedScore.total_score,
+      state: "language_override_required",
+    });
     return {
       state: "language_override_required",
       ai_score: parsedScore.total_score,
@@ -227,6 +282,14 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
       [context.submission.id],
     );
 
+    emitToBounty(context.bounty.id, "bounty:scored", {
+      bounty_id: context.bounty.id,
+      submission_id: context.submission.id,
+      final_score: finalScore.finalScore,
+      ai_score: parsedScore.total_score,
+      state: "passed",
+    });
+
     return {
       state: "passed",
       ai_score: parsedScore.total_score,
@@ -245,6 +308,14 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     creatorId: context.creatorId,
     finalScore: finalScore.finalScore,
     justification: parsedScore.justification,
+  });
+
+  emitToBounty(context.bounty.id, "bounty:scored", {
+    bounty_id: context.bounty.id,
+    submission_id: context.submission.id,
+    final_score: finalScore.finalScore,
+    ai_score: parsedScore.total_score,
+    state: "failed",
   });
 
   return {
@@ -466,6 +537,7 @@ async function callGroqApi(payload: Record<string, unknown>) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
+    const startedAt = Date.now();
 
     try {
       const response = await fetch(GROQ_API_URL, {
@@ -479,6 +551,12 @@ async function callGroqApi(payload: Record<string, unknown>) {
       });
 
       if (response.status === 429 || response.status >= 500) {
+        logEvent("warn", "Groq API returned retryable status", {
+          event_type: "groq_api_retryable",
+          duration_ms: Date.now() - startedAt,
+          status_code: response.status,
+          attempt,
+        });
         const retryableError = new Error(`AI-F-001: GROQ unavailable (${response.status})`);
         lastError = retryableError;
         if (attempt < 3) {
@@ -489,6 +567,12 @@ async function callGroqApi(payload: Record<string, unknown>) {
       }
 
       if (!response.ok) {
+        logEvent("warn", "Groq API returned non-success status", {
+          event_type: "groq_api_error",
+          duration_ms: Date.now() - startedAt,
+          status_code: response.status,
+          attempt,
+        });
         throw new Error(`GROQ request failed (${response.status})`);
       }
 
@@ -499,6 +583,12 @@ async function callGroqApi(payload: Record<string, unknown>) {
       if (!content) {
         throw new Error("AI-F-002: GROQ returned empty content");
       }
+
+      logEvent("info", "Groq API scoring call completed", {
+        event_type: "groq_api_scored",
+        duration_ms: Date.now() - startedAt,
+        attempt,
+      });
 
       return content;
     } catch (error) {
@@ -519,6 +609,19 @@ async function callGroqApi(payload: Record<string, unknown>) {
   throw lastError instanceof Error
     ? lastError
     : new Error("AI-F-001: GROQ unavailable after retries");
+}
+
+function assertAiInputSizeLimits(input: { acceptanceCriteria: string; cachedDiff: string }) {
+  const criteriaBytes = Buffer.byteLength(input.acceptanceCriteria, "utf8");
+  const diffBytes = Buffer.byteLength(input.cachedDiff, "utf8");
+
+  if (criteriaBytes > AI_MAX_CRITERIA_BYTES) {
+    throw new Error("API-003: acceptance_criteria exceeds configured size limit for AI scoring");
+  }
+
+  if (diffBytes > AI_MAX_DIFF_BYTES) {
+    throw new Error("API-003: cached_diff exceeds configured size limit for AI scoring");
+  }
 }
 
 function parseGroqResponse(content: string): GroqScorePayload {

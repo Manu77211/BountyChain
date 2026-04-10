@@ -3,7 +3,11 @@ import algosdk from "algosdk";
 const ALGOD_SERVER = process.env.ALGOD_SERVER ?? "https://testnet-api.algonode.cloud";
 const ALGOD_PORT = process.env.ALGOD_PORT ?? "";
 const ALGOD_TOKEN = process.env.ALGOD_TOKEN ?? "";
+const INDEXER_SERVER = process.env.ALGOD_INDEXER_SERVER ?? "https://testnet-idx.algonode.cloud";
+const INDEXER_PORT = process.env.ALGOD_INDEXER_PORT ?? "";
+const INDEXER_TOKEN = process.env.ALGOD_INDEXER_TOKEN ?? "";
 const ALGOD_MOCK_MODE = (process.env.ALGOD_MOCK_MODE ?? "true").toLowerCase() === "true";
+const REQUIRE_SIMULATION = (process.env.ALGOD_REQUIRE_SIMULATION ?? "true").toLowerCase() === "true";
 
 export interface EscrowCreateResult {
   txId: string;
@@ -21,11 +25,28 @@ export interface SplitPayoutShare {
   recipientUserId: string;
 }
 
+export interface DisputeResolveInput {
+  disputeId: string;
+  outcome: "freelancer_wins" | "client_wins" | "split";
+  freelancerShareBps: number;
+}
+
 export class AlgorandService {
   private readonly client: algosdk.Algodv2;
+  private readonly indexer: algosdk.Indexer;
 
   constructor() {
     this.client = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT);
+    this.indexer = new algosdk.Indexer(INDEXER_TOKEN, INDEXER_SERVER, INDEXER_PORT);
+  }
+
+  async healthCheck() {
+    if (ALGOD_MOCK_MODE) {
+      return true;
+    }
+
+    await this.client.status().do();
+    return true;
   }
 
   async getWalletBalanceMicroAlgo(walletAddress: string) {
@@ -82,14 +103,17 @@ export class AlgorandService {
     );
   }
 
-  async extendBountyDeadline(_bountyId: string, _newDeadlineIso: string) {
+  async extendBountyDeadline(bountyId: string, newDeadlineIso: string) {
+    void bountyId;
+    void newDeadlineIso;
     if (ALGOD_MOCK_MODE) {
       return { txId: `mock-extend-${Date.now()}` };
     }
     throw new Error("Smart contract deadline extension call is not configured.");
   }
 
-  async refundClientEscrow(_bountyId: string) {
+  async refundClientEscrow(bountyId: string) {
+    void bountyId;
     if (ALGOD_MOCK_MODE) {
       return { txId: `mock-refund-${Date.now()}` };
     }
@@ -100,6 +124,38 @@ export class AlgorandService {
     return this.withRetry(
       async () => this.refundClientEscrow(input.bountyId),
       "SC-C-002: Client refund retries exhausted.",
+      3,
+    );
+  }
+
+  async openDisputeWithRetry(input: { disputeId: string; submissionId: string; bountyId: string }) {
+    return this.withRetry(
+      async () => this.openDispute(input),
+      "SC-C-002: open_dispute retries exhausted.",
+      3,
+    );
+  }
+
+  async resolveDisputeWithRetry(input: DisputeResolveInput) {
+    return this.withRetry(
+      async () => this.resolveDispute(input),
+      "SC-C-002: resolve_dispute retries exhausted.",
+      3,
+    );
+  }
+
+  async banWalletOnChainWithRetry(input: { walletAddress: string; reason: string }) {
+    return this.withRetry(
+      async () => this.banWalletOnChain(input),
+      "SC-C-002: ban_wallet retries exhausted.",
+      3,
+    );
+  }
+
+  async removeWalletAllowlistWithRetry(input: { walletAddress: string }) {
+    return this.withRetry(
+      async () => this.removeWalletAllowlist(input),
+      "SC-C-002: allowlist removal retries exhausted.",
       3,
     );
   }
@@ -208,6 +264,20 @@ export class AlgorandService {
       return false;
     }
 
+    if (ALGOD_MOCK_MODE) {
+      return true;
+    }
+
+    try {
+      const indexed = await this.indexer.lookupTransactionByID(txId).do();
+      const round = Number((indexed.transaction as { confirmedRound?: number } | undefined)?.confirmedRound ?? 0);
+      if (round > 0) {
+        return true;
+      }
+    } catch {
+      // Fall through to algod pending-transaction probe.
+    }
+
     try {
       const txInfo = await this.client.pendingTransactionInformation(txId).do();
       const confirmedRound = Number(txInfo.confirmedRound ?? 0);
@@ -234,6 +304,12 @@ export class AlgorandService {
       throw new Error("SC-C-004: ESCROW_APP_ID missing; cannot deploy or call escrow contract.");
     }
 
+    await this.assertDryRunSimulated("create_bounty_escrow", {
+      bounty_id: input.bountyId,
+      creator_wallet: input.creatorWallet,
+      amount_micro_algo: input.amountMicroAlgo.toString(),
+    });
+
     throw new Error("SC-C-004: Real escrow contract invocation is not wired in this environment.");
   }
 
@@ -249,6 +325,12 @@ export class AlgorandService {
         confirmations: 1,
       };
     }
+
+    await this.assertDryRunSimulated("release_payout", {
+      submission_id: input.submissionId,
+      amount_micro_algo: input.amountMicroAlgo.toString(),
+      recipient_wallet: input.recipientWallet,
+    });
 
     void input;
     throw new Error("SC-C-004: Smart contract release_payout is not configured.");
@@ -266,6 +348,11 @@ export class AlgorandService {
       };
     }
 
+    await this.assertDryRunSimulated("release_split_payout", {
+      submission_id: input.submissionId,
+      share_count: input.shares.length,
+    });
+
     void input;
     throw new Error("SC-C-004: Smart contract split payout is not configured.");
   }
@@ -282,8 +369,95 @@ export class AlgorandService {
       };
     }
 
+    await this.assertDryRunSimulated("release_milestone_payout", {
+      milestone_id: input.milestoneId,
+      submission_id: input.submissionId,
+      amount_micro_algo: input.amountMicroAlgo.toString(),
+    });
+
     void input;
     throw new Error("SC-C-004: Smart contract milestone payout is not configured.");
+  }
+
+  private async openDispute(input: { disputeId: string; submissionId: string; bountyId: string }) {
+    if (ALGOD_MOCK_MODE) {
+      return {
+        txId: `mock-open-dispute-${input.disputeId}-${Date.now()}`,
+        confirmations: 1,
+      };
+    }
+
+    await this.assertDryRunSimulated("open_dispute", {
+      dispute_id: input.disputeId,
+      submission_id: input.submissionId,
+      bounty_id: input.bountyId,
+    });
+
+    void input;
+    throw new Error("SC-C-004: Smart contract open_dispute is not configured.");
+  }
+
+  private async resolveDispute(input: DisputeResolveInput) {
+    if (ALGOD_MOCK_MODE) {
+      return {
+        txId: `mock-resolve-dispute-${input.disputeId}-${Date.now()}`,
+        confirmations: 1,
+      };
+    }
+
+    await this.assertDryRunSimulated("resolve_dispute", {
+      dispute_id: input.disputeId,
+      outcome: input.outcome,
+      freelancer_share_bps: input.freelancerShareBps,
+    });
+
+    void input;
+    throw new Error("SC-C-004: Smart contract resolve_dispute is not configured.");
+  }
+
+  private async banWalletOnChain(input: { walletAddress: string; reason: string }) {
+    if (ALGOD_MOCK_MODE) {
+      return {
+        txId: `mock-ban-wallet-${input.walletAddress}-${Date.now()}`,
+      };
+    }
+
+    await this.assertDryRunSimulated("ban_wallet", {
+      wallet_address: input.walletAddress,
+      reason: input.reason,
+    });
+
+    void input;
+    throw new Error("SC-C-004: Smart contract ban_wallet is not configured.");
+  }
+
+  private async removeWalletAllowlist(input: { walletAddress: string }) {
+    if (ALGOD_MOCK_MODE) {
+      return {
+        txId: `mock-remove-allowlist-${input.walletAddress}-${Date.now()}`,
+      };
+    }
+
+    await this.assertDryRunSimulated("remove_wallet_allowlist", {
+      wallet_address: input.walletAddress,
+    });
+
+    void input;
+    throw new Error("SC-C-004: Smart contract allowlist removal is not configured.");
+  }
+
+  private async assertDryRunSimulated(operationName: string, metadata: Record<string, unknown>) {
+    if (ALGOD_MOCK_MODE || !REQUIRE_SIMULATION) {
+      return;
+    }
+
+    try {
+      await this.client.status().do();
+    } catch {
+      throw new Error(`SC-C-003: Unable to dry-run ${operationName}; Algorand node unavailable.`);
+    }
+
+    void metadata;
   }
 
   private async withRetry<T>(

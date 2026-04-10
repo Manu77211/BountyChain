@@ -16,6 +16,7 @@ import {
   fundBountyParamsSchema,
   idParamSchema,
 } from "../schemas/bounty.schema";
+import { emitToBounty, emitToUser } from "../realtime/socket";
 import { AlgorandService } from "../services/algorand";
 import { parseGitHubRepo } from "../services/wallet";
 
@@ -165,6 +166,7 @@ router.post(
       if (!bounty) {
         throw new AppError(404, 404, "Bounty not found");
       }
+      assertBountyIsActionable(bounty, "fund");
       if (bounty.creator_id !== request.user.userId) {
         throw new AppError(403, 403, "Only the bounty creator can fund escrow");
       }
@@ -196,6 +198,13 @@ router.post(
         `;
 
         const funded = await dbQuery(fundedSql, [escrow.contractAddress, bounty.id]);
+
+        emitToBounty(bounty.id, "bounty:funded", {
+          bounty_id: bounty.id,
+          tx_id: escrow.txId,
+          escrow_contract_address: escrow.contractAddress,
+        });
+
         return response.status(200).json({
           bounty: funded.rows[0],
           tx_id: escrow.txId,
@@ -335,6 +344,7 @@ router.patch(
       if (!bounty) {
         throw new AppError(404, 404, "Bounty not found");
       }
+      assertBountyIsActionable(bounty, "extend_deadline");
       if (bounty.creator_id !== request.user.userId || request.user.role !== "client") {
         throw new AppError(403, 403, "Only the bounty client creator can extend deadline");
       }
@@ -366,8 +376,7 @@ router.patch(
       `;
       const updated = await dbQuery(updateSql, [newDeadline.toISOString(), bounty.id]);
 
-      const io = request.app.get("io") as { emit?: (event: string, payload: unknown) => void } | undefined;
-      io?.emit?.("bounty:deadline_extended", {
+      emitToBounty(bounty.id, "bounty:deadline_extended", {
         bounty_id: bounty.id,
         new_deadline: newDeadline.toISOString(),
       });
@@ -394,6 +403,7 @@ router.delete(
       if (!bounty) {
         throw new AppError(404, 404, "Bounty not found");
       }
+      assertBountyIsActionable(bounty, "cancel");
       if (bounty.creator_id !== request.user.userId) {
         throw new AppError(403, 403, "Only the creator can cancel the bounty");
       }
@@ -437,6 +447,7 @@ router.delete(
 router.post(
   "/:id/accept",
   requireAuth,
+  sanctionsMiddleware("bounties.accept"),
   validateParams(idParamSchema),
   validateBody(acceptBountySchema),
   async (request, response, next) => {
@@ -449,6 +460,7 @@ router.post(
       if (!bounty) {
         throw new AppError(404, 404, "Bounty not found");
       }
+      assertBountyIsActionable(bounty, "accept");
       if (bounty.creator_id === request.user.userId) {
         throw new AppError(403, 403, "XC-001: Creator cannot accept own bounty");
       }
@@ -464,6 +476,18 @@ router.post(
           bounty.id,
           request.body.github_pr_url,
         ),
+      });
+
+      emitToBounty(bounty.id, "bounty:accepted", {
+        bounty_id: bounty.id,
+        submission_id: submission.id,
+        freelancer_id: request.user.userId,
+      });
+
+      emitToUser(bounty.creator_id, "bounty:accepted", {
+        bounty_id: bounty.id,
+        submission_id: submission.id,
+        freelancer_id: request.user.userId,
       });
 
       return response.status(201).json({ submission });
@@ -494,6 +518,12 @@ async function getBountyById(id: string) {
   `;
   const result = await dbQuery<BountyRow>(sql, [id]);
   return result.rows[0] ?? null;
+}
+
+function assertBountyIsActionable(bounty: BountyRow, action: string) {
+  if (bounty.status === "error_escrow_corrupt") {
+    throw new AppError(409, 409, `DB-004: bounty action blocked (${action}) due to escrow corruption`);
+  }
 }
 
 async function getBountyByIdempotencyKey(idempotencyKey: string) {

@@ -7,10 +7,28 @@ import { listProjectsRequest, meRequest } from "../../../lib/api";
 import { useAuthStore } from "../../../store/auth-store";
 import { Button, Card, PageIntro, Pill } from "../../../components/ui/primitives";
 
+type WalletMilestone = {
+  id: string;
+  title: string;
+  amount?: number;
+  status: string;
+  updatedAt?: string;
+};
+
+type WalletProject = {
+  id: string;
+  title: string;
+  milestones?: WalletMilestone[];
+};
+
+type WalletProfile = {
+  walletBalance?: number;
+};
+
 export default function DashboardWalletPage() {
   const { token, user, hydrate } = useAuthStore();
   const [balance, setBalance] = useState(0);
-  const [projects, setProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<WalletProject[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -26,8 +44,9 @@ export default function DashboardWalletPage() {
       setLoading(true);
       try {
         const [profile, projectList] = await Promise.all([meRequest(token), listProjectsRequest(token)]);
-        setBalance(profile.walletBalance ?? 0);
-        setProjects(projectList);
+        const typedProfile = profile as WalletProfile;
+        setBalance(typedProfile.walletBalance ?? 0);
+        setProjects(projectList as WalletProject[]);
       } finally {
         setLoading(false);
       }
@@ -39,8 +58,8 @@ export default function DashboardWalletPage() {
   const lockedAmount = useMemo(() => {
     return projects.reduce((sum, project) => {
       const amount = (project.milestones ?? [])
-        .filter((milestone: any) => milestone.status !== "APPROVED")
-        .reduce((inner: number, milestone: any) => inner + Number(milestone.amount ?? 0), 0);
+        .filter((milestone) => milestone.status !== "APPROVED")
+        .reduce((inner, milestone) => inner + Number(milestone.amount ?? 0), 0);
       return sum + amount;
     }, 0);
   }, [projects]);
@@ -48,8 +67,8 @@ export default function DashboardWalletPage() {
   const releasedAmount = useMemo(() => {
     return projects.reduce((sum, project) => {
       const amount = (project.milestones ?? [])
-        .filter((milestone: any) => milestone.status === "APPROVED")
-        .reduce((inner: number, milestone: any) => inner + Number(milestone.amount ?? 0), 0);
+        .filter((milestone) => milestone.status === "APPROVED")
+        .reduce((inner, milestone) => inner + Number(milestone.amount ?? 0), 0);
       return sum + amount;
     }, 0);
   }, [projects]);
@@ -90,7 +109,7 @@ export default function DashboardWalletPage() {
 
         <div className="mt-4 space-y-2">
           {projects.flatMap((project) =>
-            (project.milestones ?? []).map((milestone: any) => {
+            (project.milestones ?? []).map((milestone) => {
               const type = milestone.status === "APPROVED" ? "Released" : "Locked";
               return (
                 <div key={`${project.id}-${milestone.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">

@@ -1,7 +1,12 @@
+import "../lib/load-env";
 import { dbPool } from "../lib/db/client";
 import { findEscrowConsistencyIssues } from "../lib/db/queries";
 
 async function main() {
+  if (!dbPool) {
+    throw new Error("DATABASE_URL is required to run consistency checks.");
+  }
+
   const issues = await findEscrowConsistencyIssues();
   if (issues.length === 0) {
     console.log("DB-004: No escrow consistency issues found.");

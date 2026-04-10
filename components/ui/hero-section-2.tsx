@@ -46,6 +46,7 @@ export function HeroSection2() {
               <div className="relative -mr-56 mt-8 overflow-hidden px-2 sm:mr-0 sm:mt-12 md:mt-20">
                 <div aria-hidden className="bg-gradient-to-b to-[#050914] absolute inset-0 z-10 from-transparent from-35%" />
                 <div className="bg-slate-900/70 relative mx-auto max-w-5xl overflow-hidden rounded-2xl border border-slate-700 p-4 shadow-lg shadow-black/40 ring-1 ring-slate-700">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     className="aspect-[15/8] relative rounded-2xl"
                     src="https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1600&q=80"
