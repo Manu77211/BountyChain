@@ -10,11 +10,9 @@ import {
   LayoutDashboard,
   Layers,
   MessageSquare,
-  Moon,
   Plus,
   Scale,
   Shield,
-  Sun,
   Trophy,
   User,
 } from "lucide-react";
@@ -74,7 +72,7 @@ function BrandLogo({ collapsed }: { collapsed: boolean }) {
 export function Sidebar({ activeDisputes = 0 }: { activeDisputes?: number }) {
   const pathname = usePathname();
   const { token, user } = useAuthStore();
-  const { sidebarCollapsed, toggleSidebarCollapsed, theme, toggleTheme } = useUiStore();
+  const { sidebarCollapsed, toggleSidebarCollapsed } = useUiStore();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
 
   useEffect(() => {
@@ -227,15 +225,6 @@ export function Sidebar({ activeDisputes = 0 }: { activeDisputes?: number }) {
           <span className="h-2 w-2 rounded-full bg-[#0f7b44]" />
           {!sidebarCollapsed ? <span className="truncate">{truncateAddress(walletAddress, 6, 4)}</span> : null}
         </div>
-
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className={`flex w-full items-center gap-2 rounded-none border border-border bg-surface-1 px-2 py-2 text-xs font-semibold text-text-primary hover:bg-surface-3 ${sidebarCollapsed ? "justify-center" : ""}`}
-        >
-          {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-          {!sidebarCollapsed ? <span>Theme</span> : null}
-        </button>
 
         <button
           type="button"

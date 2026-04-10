@@ -405,7 +405,7 @@ export default function CreateBountyPage() {
       setDescriptionSuggestionMessage(
         response.data.aiUsed
           ? "Description updated using AI suggestion."
-          : "AI unavailable, applied a structured fallback suggestion.",
+          : `AI unavailable: ${response.data.aiErrorDetail ?? "request failed"}. Applied a structured fallback suggestion.`,
       );
     } catch (error) {
       setDescriptionSuggestionMessage((error as Error).message);

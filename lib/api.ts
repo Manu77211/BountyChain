@@ -319,6 +319,7 @@ export async function suggestProjectDescriptionRequest(
       suggestedDescription: string;
       suggestedAcceptanceCriteria: string;
       aiUsed: boolean;
+      aiErrorDetail?: string;
     };
   };
 }

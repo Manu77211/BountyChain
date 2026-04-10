@@ -12,7 +12,11 @@ import {
 
 const router = Router();
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_DESCRIPTION_MODEL = "llama-3.1-8b-instant";
+const GROQ_DESCRIPTION_MODELS = [
+  process.env.GROQ_DESCRIPTION_MODEL?.trim(),
+  "llama-3.1-8b-instant",
+  "llama-3.3-70b-versatile",
+].filter((value): value is string => Boolean(value));
 const GROQ_TIMEOUT_MS = 20_000;
 
 function extractKeywords(input: string) {
@@ -95,13 +99,39 @@ function truncate(value: string, maxLength: number) {
   return `${value.slice(0, maxLength - 3).trim()}...`;
 }
 
+function defaultAcceptanceCriteria() {
+  return [
+    "- Required functionality is fully implemented and verified.",
+    "- Code quality standards are met and lint/build checks pass.",
+    "- Documentation explains setup, usage, and expected outputs.",
+    "- Changes avoid regressions in existing critical flows.",
+  ].join("\n");
+}
+
+function normalizeGoalText(description: string) {
+  let normalized = description.trim().replace(/\s+/g, " ");
+
+  // Strip recursive prefixes from repeated fallback runs, e.g. "Goal: Goal: ..."
+  while (/^goal:\s*/i.test(normalized)) {
+    normalized = normalized.replace(/^goal:\s*/i, "").trim();
+  }
+
+  // Remove prior generated scaffold block if user re-runs Improve with AI.
+  const scaffoldStart = normalized.indexOf("Scope: - Deliver production-ready code aligned to the repository structure.");
+  if (scaffoldStart > 0) {
+    normalized = normalized.slice(0, scaffoldStart).trim();
+  }
+
+  return normalized;
+}
+
 function toFallbackSuggestion(input: {
   title?: string;
   description: string;
   acceptanceCriteria?: string;
   allowedLanguages: string[];
 }) {
-  const cleanedDescription = input.description.trim().replace(/\s+/g, " ");
+  const cleanedDescription = normalizeGoalText(input.description);
   const fallbackTitle = cleanedDescription
     .split(/[.!?]/)[0]
     .split(" ")
@@ -118,8 +148,10 @@ function toFallbackSuggestion(input: {
     ? `Preferred languages: ${input.allowedLanguages.join(", ")}.`
     : "Preferred languages: match existing repository stack.";
 
+  const goalSentence = cleanedDescription || "Deliver a clear, implementable feature aligned to the repository standards";
+
   const suggestedDescription = [
-    `Goal: ${cleanedDescription.endsWith(".") ? cleanedDescription : `${cleanedDescription}.`}`,
+    `Goal: ${goalSentence.endsWith(".") ? goalSentence : `${goalSentence}.`}`,
     "",
     "Scope:",
     "- Deliver production-ready code aligned to the repository structure.",
@@ -134,12 +166,7 @@ function toFallbackSuggestion(input: {
   const suggestedAcceptanceCriteria =
     input.acceptanceCriteria && input.acceptanceCriteria.trim().length >= 30
       ? input.acceptanceCriteria.trim()
-      : [
-          "- Required functionality is fully implemented and verified.",
-          "- Code quality standards are met and lint/build checks pass.",
-          "- Documentation explains setup, usage, and expected outputs.",
-          "- Changes avoid regressions in existing critical flows.",
-        ].join("\n");
+      : defaultAcceptanceCriteria();
 
   return {
     suggestedTitle,
@@ -160,7 +187,31 @@ function parseAiJson(content: string) {
     title?: string;
     description?: string;
     acceptance_criteria?: string;
+    acceptanceCriteria?: string;
+    acceptance?: string;
+    criteria?: string;
+    detailed_description?: string;
   };
+}
+
+function cleanAiField(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function toAiErrorDetail(error: unknown) {
+  const fallback = "AI service failed to generate enhanced content.";
+  if (!(error instanceof Error)) {
+    return fallback;
+  }
+
+  const detail = error.message.trim();
+  if (detail.includes("GROQ_API_KEY is missing")) {
+    return "GROQ_API_KEY is missing. Put it in .env or .env.local and restart API.";
+  }
+  if (detail.includes("timed out") || detail.includes("AbortError")) {
+    return "Groq request timed out. Please try again.";
+  }
+  return detail || fallback;
 }
 
 async function requestAiProjectSuggestion(input: {
@@ -169,7 +220,7 @@ async function requestAiProjectSuggestion(input: {
   acceptanceCriteria?: string;
   allowedLanguages: string[];
 }) {
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY?.trim();
   if (!apiKey) {
     throw new Error("GROQ_API_KEY is missing");
   }
@@ -188,50 +239,73 @@ async function requestAiProjectSuggestion(input: {
       `Preferred languages: ${input.allowedLanguages.length > 0 ? input.allowedLanguages.join(", ") : "(unspecified)"}`,
     ].join("\n");
 
-    const response = await fetch(GROQ_CHAT_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: GROQ_DESCRIPTION_MODEL,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an expert technical project writer. Convert rough client notes into clear, scoped engineering bounty descriptions.",
+    let lastError: Error | null = null;
+
+    for (const model of GROQ_DESCRIPTION_MODELS) {
+      try {
+        const response = await fetch(GROQ_CHAT_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
           },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            temperature: 0.2,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an expert technical project writer. Convert rough client notes into clear, scoped engineering bounty descriptions with concrete requirements and definition-of-done bullets.",
+              },
+              { role: "user", content: prompt },
+            ],
+          }),
+        });
 
-    if (!response.ok) {
-      throw new Error(`AI request failed (${response.status})`);
+        if (!response.ok) {
+          const bodyText = await response.text();
+          throw new Error(`AI request failed (${response.status}) using model ${model}: ${bodyText.slice(0, 220)}`);
+        }
+
+        const body = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const content = body.choices?.[0]?.message?.content;
+        if (!content) {
+          throw new Error(`AI response is empty for model ${model}`);
+        }
+
+        const parsed = parseAiJson(content);
+        const suggestedDescription = cleanAiField(parsed.description || parsed.detailed_description);
+        const suggestedAcceptanceCriteriaRaw = cleanAiField(
+          parsed.acceptance_criteria || parsed.acceptanceCriteria || parsed.acceptance || parsed.criteria,
+        );
+
+        if (suggestedDescription.length < 60) {
+          throw new Error(`AI response description too short for model ${model}`);
+        }
+
+        const suggestedAcceptanceCriteria =
+          suggestedAcceptanceCriteriaRaw.length >= 20
+            ? suggestedAcceptanceCriteriaRaw
+            : input.acceptanceCriteria?.trim().length && input.acceptanceCriteria.trim().length >= 30
+              ? input.acceptanceCriteria.trim()
+              : defaultAcceptanceCriteria();
+
+        return {
+          suggestedTitle: truncate(cleanAiField(parsed.title) || input.title?.trim() || "Implementation Bounty", 120),
+          suggestedDescription,
+          suggestedAcceptanceCriteria,
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error("AI request failed");
+      }
     }
 
-    const body = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = body.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("AI response is empty");
-    }
-
-    const parsed = parseAiJson(content);
-    if (!parsed.description || !parsed.acceptance_criteria) {
-      throw new Error("AI response missing required fields");
-    }
-
-    return {
-      suggestedTitle: truncate(parsed.title?.trim() || input.title?.trim() || "Implementation Bounty", 120),
-      suggestedDescription: parsed.description.trim(),
-      suggestedAcceptanceCriteria: parsed.acceptance_criteria.trim(),
-    };
+    throw lastError ?? new Error("AI request failed");
   } finally {
     clearTimeout(timeout);
   }
@@ -282,11 +356,12 @@ router.post(
             aiUsed: true,
           },
         });
-      } catch {
+      } catch (error) {
         return response.status(200).json({
           data: {
             ...fallback,
             aiUsed: false,
+            aiErrorDetail: toAiErrorDetail(error),
           },
         });
       }
