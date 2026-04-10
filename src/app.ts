@@ -6,6 +6,7 @@ import helmet from "helmet";
 import authRoutes from "./routes/auth";
 import bountyRoutes from "./routes/bounties";
 import disputeRoutes from "./routes/disputes";
+import freelancersRoutes from "./routes/freelancers";
 import submissionsRoutes from "./routes/submissions";
 import userRoutes from "./routes/users";
 import { inngestApp } from "./inngest/serve";
@@ -111,6 +112,7 @@ app.use("/api", healthRouter);
 
 app.use("/api/auth", authPerIpRateLimiter, authRoutes);
 app.use("/api/bounties", bountyRoutes);
+app.use("/api/freelancers", freelancersRoutes);
 app.use("/api/submissions", submissionsRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api", disputeRoutes);

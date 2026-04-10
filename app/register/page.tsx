@@ -66,16 +66,18 @@ export default function RegisterPage() {
       title="Register"
       subtitle="Create your profile as Client or Freelancer and enter the bounty escrow execution workflow."
       sideNote={
-        <p>
-          Contract-first onboarding with clear validation, sanctions, and payout policies.
-        </p>
+        <div className="space-y-3">
+          <p>Contract-first onboarding with clear validation, sanctions, and payout policies.</p>
+          <p>Choose your role first; the dashboard and available actions are tailored after sign-up.</p>
+        </div>
       }
     >
-      <Card>
+      <Card className="h-full border-[#121212] bg-[#fff9e8] p-7 shadow-[8px_8px_0_#121212]">
+        <p className="mb-4 text-xs font-black uppercase tracking-[0.22em] text-[#1040c0]">Create Account</p>
         <form className="space-y-4" onSubmit={onSubmit}>
-          <Input type="text" required placeholder="Name" value={name} onChange={(event) => setName(event.target.value)} />
-          <Input type="email" required placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} />
-          <Input type="password" required placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <Input type="text" required placeholder="Full name" value={name} onChange={(event) => setName(event.target.value)} />
+          <Input type="email" required placeholder="Email address" value={email} onChange={(event) => setEmail(event.target.value)} />
+          <Input type="password" required placeholder="Password (minimum 8 characters)" value={password} onChange={(event) => setPassword(event.target.value)} />
 
           <Select value={role} onChange={(event) => setRole(event.target.value as "CLIENT" | "FREELANCER")}>
             <option value="CLIENT">Client</option>
@@ -93,7 +95,7 @@ export default function RegisterPage() {
           </Button>
         </form>
 
-        <p className="mt-4 text-sm text-[#3f3f3f]">
+        <p className="mt-5 text-sm text-[#3f3f3f]">
           Already have an account? <Link className="font-bold text-[#1040c0] hover:underline" href="/login">Login</Link>
         </p>
       </Card>

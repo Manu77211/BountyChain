@@ -48,12 +48,14 @@ export default function LoginPage() {
       title="Login"
       subtitle="Access your BountyEscrow AI workspace and continue escrow-backed bounty execution."
       sideNote={
-        <p>
-          Secure, role-based access for clients and freelancers with validation-gated escrow collaboration.
-        </p>
+        <div className="space-y-3">
+          <p>Secure, role-based access for clients and freelancers with validation-gated escrow collaboration.</p>
+          <p>Use email login for standard sessions or Pera Wallet login for Algorand-native identity.</p>
+        </div>
       }
     >
-      <Card>
+      <Card className="h-full border-[#121212] bg-[#fff9e8] p-7 shadow-[8px_8px_0_#121212]">
+        <p className="mb-4 text-xs font-black uppercase tracking-[0.22em] text-[#1040c0]">Sign In</p>
         <form className="space-y-4" onSubmit={onSubmit}>
           <div>
             <label className="mb-1 block text-sm font-semibold text-[#121212]" htmlFor="email">Email</label>
@@ -71,7 +73,7 @@ export default function LoginPage() {
             {loading ? "Logging in..." : "Login"}
           </Button>
 
-          <div className="rounded-lg border border-[#121212] bg-[#f5f5f5] p-3">
+          <div className="rounded-none border-2 border-[#121212] bg-white p-3">
             <p className="text-sm font-semibold text-[#121212]">Wallet Login (Pera)</p>
             <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
               <select
@@ -89,7 +91,7 @@ export default function LoginPage() {
           </div>
         </form>
 
-        <p className="mt-4 text-sm text-[#3f3f3f]">
+        <p className="mt-5 text-sm text-[#3f3f3f]">
           New here? <Link className="font-bold text-[#1040c0] hover:underline" href="/register">Create account</Link>
         </p>
       </Card>

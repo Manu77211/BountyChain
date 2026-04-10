@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "concurrently -n web,api -c cyan,green \"next dev\" \"tsx watch src/server.ts\"",
+    "dev:web": "next dev",
     "api:dev": "tsx watch src/server.ts",
     "api:start": "tsx src/server.ts",
     "build": "next build",
@@ -52,6 +53,7 @@
     "@types/nodemailer": "^8.0.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^9.2.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",

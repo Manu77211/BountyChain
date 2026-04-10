@@ -14,7 +14,7 @@ export const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL)
 export const SOCKET_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, "");
 
 const NETWORK_ERROR_MESSAGE =
-  "Cannot reach API server. Start backend on port 4000 and set NEXT_PUBLIC_API_URL in .env.local.";
+  "Cannot reach API server. Start backend on port 4000 using npm run api:start (or run npm run dev) and set NEXT_PUBLIC_API_URL in .env or .env.local.";
 
 async function parseErrorMessage(response: Response, fallback: string) {
   const contentType = response.headers.get("content-type") ?? "";
