@@ -8,7 +8,7 @@ import bountyRoutes from "./routes/bounties";
 import disputeRoutes from "./routes/disputes";
 import submissionsRoutes from "./routes/submissions";
 import userRoutes from "./routes/users";
-import { inngestApp } from "./jobs";
+import { inngestApp } from "./inngest/serve";
 import githubWebhookRoutes from "./webhooks/github";
 import { AppError, errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import {
@@ -76,7 +76,7 @@ app.use((request, response, next) => {
       user_id: request.user?.userId,
       event_type: "http_request",
       method: request.method,
-      path: request.path,
+      path: request.originalUrl || request.path,
       status_code: response.statusCode,
       duration_ms: Date.now() - startedAt,
     });

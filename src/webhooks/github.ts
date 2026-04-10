@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import express, { Router } from "express";
 import { dbQuery } from "../../lib/db/client";
-import { inngest } from "../jobs/aiScoring.job";
+import { inngest } from "../inngest/client";
 import { queueCiValidationFromWorkflowWebhook } from "../services/validation.service";
 
 const router = Router();
@@ -155,7 +155,7 @@ async function handleGitHubEvent(
     },
     {
       send: async (eventName, data) => {
-        await inngest.send({ name: eventName, data });
+        await inngest.send({ name: eventName as never, data: data as never });
       },
     },
     deliveryId,
