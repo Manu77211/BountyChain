@@ -159,7 +159,7 @@ export default function DashboardPage() {
               </div>
             ))}
             {!loading && recentMessages.length === 0 ? (
-              <p className="text-sm text-[#4b4b4b]">No activity yet. Start a project conversation to populate updates.</p>
+              <p className="text-sm text-[#4b4b4b]">No activity yet. Start a bounty conversation to populate updates.</p>
             ) : null}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">

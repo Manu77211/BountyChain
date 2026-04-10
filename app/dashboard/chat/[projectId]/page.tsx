@@ -156,15 +156,15 @@ export default function DashboardChatPage() {
   return (
     <section className="grid gap-4 lg:grid-cols-[280px,1fr]">
       <Card>
-        <p className="text-sm text-[#4b4b4b]">Project Chat</p>
-        <h1 className="mt-2 text-xl font-semibold">Project {projectId.slice(0, 8)}</h1>
+        <p className="text-sm text-[#4b4b4b]">Bounty Chat</p>
+        <h1 className="mt-2 text-xl font-semibold">Bounty {projectId.slice(0, 8)}</h1>
         <p className="mt-2 text-sm text-[#4b4b4b]">
           Real-time collaboration for escrow-backed delivery. Every message is stored and auditable.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           {user?.role ? <Pill text={user.role} /> : null}
           <Button asChild variant="secondary" className="h-8 px-3 text-xs">
-            <Link href={`/dashboard/projects/${projectId}`}>Back to Project</Link>
+            <Link href={`/dashboard/bounties/${projectId}`}>Back to Bounty</Link>
           </Button>
         </div>
       </Card>
@@ -176,7 +176,7 @@ export default function DashboardChatPage() {
 
         <div className="mt-3 max-h-[460px] space-y-3 overflow-y-auto rounded-xl border border-[#121212] bg-[#f5f5f5] p-4">
           {sortedMessages.length === 0 ? (
-            <p className="text-sm text-[#4b4b4b]">No messages yet. Start the project conversation.</p>
+            <p className="text-sm text-[#4b4b4b]">No messages yet. Start the bounty conversation.</p>
           ) : null}
 
           {sortedMessages.map((message) => {

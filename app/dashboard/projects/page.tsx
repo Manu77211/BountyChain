@@ -146,11 +146,11 @@ export default function ProjectsPage() {
 
   async function onDeleteProject(projectId: string) {
     if (!token) {
-      setError("Please login again to delete a project.");
+      setError("Please login again to delete a bounty.");
       return;
     }
 
-    const confirmed = window.confirm("Delete this project? This cannot be undone.");
+    const confirmed = window.confirm("Delete this bounty? This cannot be undone.");
     if (!confirmed) {
       return;
     }

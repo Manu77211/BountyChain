@@ -294,7 +294,6 @@ export default function DashboardProjectDetailPage() {
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-xl font-semibold">Project Header</h2>
             <h2 className="text-xl font-semibold">Bounty Header</h2>
             <p className="mt-1 text-sm text-[#4b4b4b]">Participants and status at a glance.</p>
             <div className="mt-3 flex flex-wrap gap-2">

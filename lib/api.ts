@@ -14,7 +14,7 @@ export const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL)
 export const SOCKET_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, "");
 
 const NETWORK_ERROR_MESSAGE =
-  "Cannot reach API server. Start backend on port 4000 and set NEXT_PUBLIC_API_URL in client/.env.local.";
+  "Cannot reach API server. Start backend on port 4000 and set NEXT_PUBLIC_API_URL in .env.local.";
 
 async function parseErrorMessage(response: Response, fallback: string) {
   const contentType = response.headers.get("content-type") ?? "";
@@ -159,7 +159,7 @@ export async function createProjectRequest(
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to create project"));
+    throw new Error(await parseErrorMessage(response, "Failed to create bounty"));
   }
 
   return response.json();
@@ -173,7 +173,7 @@ export async function listProjectsRequest(token: string) {
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to load projects"));
+    throw new Error(await parseErrorMessage(response, "Failed to load bounties"));
   }
 
   return response.json();
@@ -187,7 +187,7 @@ export async function getProjectRequest(token: string, projectId: string) {
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to load project"));
+    throw new Error(await parseErrorMessage(response, "Failed to load bounty"));
   }
 
   return response.json();
@@ -223,7 +223,7 @@ export async function deleteProjectRequest(token: string, projectId: string) {
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to delete project"));
+    throw new Error(await parseErrorMessage(response, "Failed to delete bounty"));
   }
 }
 
@@ -235,7 +235,7 @@ export async function discoverOpenProjectsRequest(token: string) {
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to discover projects"));
+    throw new Error(await parseErrorMessage(response, "Failed to discover bounties"));
   }
 
   return response.json();
@@ -261,7 +261,7 @@ export async function applyToProjectRequest(
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to apply to project"));
+    throw new Error(await parseErrorMessage(response, "Failed to apply to bounty"));
   }
 
   return response.json();
@@ -275,7 +275,7 @@ export async function listProjectApplicantsRequest(token: string, projectId: str
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to load applicants"));
+    throw new Error(await parseErrorMessage(response, "Failed to load bounty applicants"));
   }
 
   return response.json();
@@ -296,7 +296,7 @@ export async function selectProjectApplicantRequest(
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to select applicant"));
+    throw new Error(await parseErrorMessage(response, "Failed to select bounty applicant"));
   }
 
   return response.json();
@@ -313,7 +313,7 @@ export async function approveProjectDraftRequest(token: string, projectId: strin
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to approve draft"));
+    throw new Error(await parseErrorMessage(response, "Failed to approve bounty draft"));
   }
 
   return response.json();
@@ -424,7 +424,7 @@ export async function listProjectMessagesRequest(token: string, projectId: strin
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "Failed to load messages"));
+    throw new Error(await parseErrorMessage(response, "Failed to load bounty messages"));
   }
 
   return (await response.json()) as ProjectMessage[];

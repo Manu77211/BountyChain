@@ -83,7 +83,7 @@ export default function DashboardFreelancersPage() {
 
   async function onHireFreelancer() {
     if (!token || !selectedProjectId || !selectedFreelancerId) {
-      setError("Select a project before hiring.");
+      setError("Select a bounty before assigning.");
       return;
     }
 
@@ -93,7 +93,7 @@ export default function DashboardFreelancersPage() {
 
     try {
       await assignFreelancerRequest(token, selectedProjectId, selectedFreelancerId);
-      setSuccess("Freelancer assigned successfully.");
+      setSuccess("Freelancer assigned to bounty successfully.");
       setSelectedFreelancerId("");
       setSelectedProjectId("");
       await fetchFreelancers();
@@ -112,7 +112,7 @@ export default function DashboardFreelancersPage() {
     <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
       <PageIntro
         title="Freelancer Discovery"
-        subtitle="Search and filter talent by skills, rating, and trust score before assignment."
+        subtitle="Search and filter talent by skills, rating, and trust score before bounty assignment."
       />
 
       <Card>
@@ -149,20 +149,20 @@ export default function DashboardFreelancersPage() {
                 <DialogHeader>
                   <DialogTitle className="text-lg font-semibold">Assign Freelancer</DialogTitle>
                   <DialogDescription className="text-sm text-[#4b4b4b]">
-                    Choose one of your unassigned projects to hire {item.name}.
+                    Choose one of your unassigned bounties to hire {item.name}.
                   </DialogDescription>
                 </DialogHeader>
                 {projects.length === 0 ? (
                   <div className="space-y-3">
-                    <p className="text-sm text-[#3f3f3f]">No unassigned projects available. Create a project first.</p>
+                    <p className="text-sm text-[#3f3f3f]">No unassigned bounties available. Create a bounty first.</p>
                     <Button asChild variant="secondary" className="w-full">
-                      <a href="/dashboard/projects">Go to Projects</a>
+                      <a href="/dashboard/bounties">Go to Bounties</a>
                     </Button>
                   </div>
                 ) : (
                   <div className="space-y-3">
                     <Select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
-                      <option value="">Select project</option>
+                      <option value="">Select bounty</option>
                       {projects.map((project) => (
                         <option key={project.id} value={project.id}>
                           {project.title}
