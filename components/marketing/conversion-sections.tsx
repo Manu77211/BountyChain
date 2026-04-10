@@ -308,7 +308,7 @@ export function MarketingFooter() {
             links: [
               { label: "Features", href: "/features" },
               { label: "Pricing", href: "/pricing" },
-              { label: "For Clients", href: "/for-clients" },
+              { label: "People", href: "/people" },
               { label: "For Freelancers", href: "/for-freelancers" },
             ],
           },

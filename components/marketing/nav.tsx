@@ -19,7 +19,7 @@ export function MarketingNav() {
     () => [
       { href: "/features", label: "Features" },
       { href: "/marketplace", label: "Marketplace" },
-      { href: "/for-clients", label: "For Clients" },
+      { href: "/people", label: "People" },
       { href: "/for-freelancers", label: "Bounties" },
       { href: "/pricing", label: "Pricing" },
       { href: "/faq", label: "FAQ" },

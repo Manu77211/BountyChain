@@ -15,6 +15,7 @@ import {
   fundBountyRequest,
   listMyBountiesRequest,
   recommendFreelancersRequest,
+  suggestProjectDescriptionRequest,
   validateGithubRepoRequest,
 } from "../../../lib/api";
 import { MICRO_ALGO_PER_ALGO, fromMicroAlgo, toMicroAlgo } from "../../../lib/algo";
@@ -181,6 +182,8 @@ export default function CreateBountyPage() {
   const [recommendations, setRecommendations] = useState<RecommendedFreelancer[]>([]);
   const [recommendationsLoading, setRecommendationsLoading] = useState(false);
   const [recommendationError, setRecommendationError] = useState<string | null>(null);
+  const [descriptionSuggestionLoading, setDescriptionSuggestionLoading] = useState(false);
+  const [descriptionSuggestionMessage, setDescriptionSuggestionMessage] = useState<string | null>(null);
   const [shortlistedIds, setShortlistedIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<DraftBounty[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -361,6 +364,51 @@ export default function CreateBountyPage() {
       setRecommendationError((error as Error).message);
     } finally {
       setRecommendationsLoading(false);
+    }
+  }
+
+  async function improveProjectDescription() {
+    if (!token) {
+      setDescriptionSuggestionMessage("Session missing. Please sign in again.");
+      return;
+    }
+
+    const description = form.getValues("description").trim();
+    if (description.length < 12) {
+      setDescriptionSuggestionMessage("Add a short draft description first.");
+      return;
+    }
+
+    setDescriptionSuggestionLoading(true);
+    setDescriptionSuggestionMessage(null);
+
+    try {
+      const response = await suggestProjectDescriptionRequest(token, {
+        title: form.getValues("title").trim(),
+        description,
+        acceptance_criteria: form.getValues("acceptanceCriteria").trim(),
+        allowed_languages: form.getValues("allowedLanguages").map((value) => value.toLowerCase()),
+      });
+
+      form.setValue("title", response.data.suggestedTitle, { shouldDirty: true, shouldValidate: true });
+      form.setValue("description", response.data.suggestedDescription, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+      form.setValue("acceptanceCriteria", response.data.suggestedAcceptanceCriteria, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+
+      setDescriptionSuggestionMessage(
+        response.data.aiUsed
+          ? "Description updated using AI suggestion."
+          : "AI unavailable, applied a structured fallback suggestion.",
+      );
+    } catch (error) {
+      setDescriptionSuggestionMessage((error as Error).message);
+    } finally {
+      setDescriptionSuggestionLoading(false);
     }
   }
 
@@ -589,12 +637,26 @@ export default function CreateBountyPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-sm font-semibold">Description</label>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className="block text-sm font-semibold">Description</label>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-8 px-3 text-xs"
+                      onClick={() => void improveProjectDescription()}
+                      disabled={descriptionSuggestionLoading}
+                    >
+                      {descriptionSuggestionLoading ? "Improving..." : "Improve with AI"}
+                    </Button>
+                  </div>
                   <Textarea
                     {...form.register("description")}
                     rows={4}
                     onInput={(event) => textAreaAutoResize(event.currentTarget)}
                   />
+                  {descriptionSuggestionMessage ? (
+                    <p className="mt-1 text-xs text-[#4b4b4b]">{descriptionSuggestionMessage}</p>
+                  ) : null}
                   {form.formState.errors.description ? (
                     <p className="mt-1 text-xs text-[#8f1515]">{form.formState.errors.description.message}</p>
                   ) : null}

@@ -291,6 +291,38 @@ export async function recommendFreelancersRequest(
   return response.json();
 }
 
+export async function suggestProjectDescriptionRequest(
+  token: string,
+  payload: {
+    title?: string;
+    description: string;
+    acceptance_criteria?: string;
+    allowed_languages?: string[];
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/freelancers/project-description-suggestion`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to improve project description"));
+  }
+
+  return (await response.json()) as {
+    data: {
+      suggestedTitle: string;
+      suggestedDescription: string;
+      suggestedAcceptanceCriteria: string;
+      aiUsed: boolean;
+    };
+  };
+}
+
 export async function getFreelancerRequest(freelancerId: string) {
   const response = await safeFetch(`${API_BASE_URL}/freelancers/${freelancerId}`);
   if (!response.ok) {
@@ -311,6 +343,95 @@ export async function getPublicUserProfileRequest(token: string, userId: string)
   }
 
   return response.json();
+}
+
+export interface DiscoverPerson {
+  id: string;
+  name: string;
+  role: "CLIENT" | "FREELANCER" | "ADMIN";
+  reputationScore: number;
+  walletAddress: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedCount: number;
+  recentCompletedBounties: Array<{
+    id: string;
+    title: string;
+    completedAt: string;
+  }>;
+  recentStories: Array<{
+    label: string;
+    at: string;
+  }>;
+}
+
+export async function discoverPeopleRequest(params?: {
+  q?: string;
+  role?: "all" | "client" | "freelancer";
+  limit?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params?.q) {
+    search.set("q", params.q);
+  }
+  if (params?.role) {
+    search.set("role", params.role);
+  }
+  if (typeof params?.limit === "number") {
+    search.set("limit", String(params.limit));
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/users/discover${suffix}`);
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load people feed"));
+  }
+
+  const payload = (await response.json()) as {
+    data: DiscoverPerson[];
+  };
+
+  return payload.data;
+}
+
+export interface UserFeedProfile {
+  user: {
+    id: string;
+    name: string;
+    role: "CLIENT" | "FREELANCER" | "ADMIN";
+    wallet_address: string | null;
+    reputation_score: number;
+    created_at: string;
+    updated_at: string;
+  };
+  stats: {
+    postedBounties: number;
+    completedBounties: number;
+    passedSubmissions: number;
+    activeDisputes: number;
+  };
+  recentCompletedBounties: Array<{
+    id: string;
+    title: string;
+    completedAt: string;
+    asRole: "CLIENT" | "FREELANCER";
+  }>;
+  recentStories: Array<{
+    label: string;
+    at: string;
+  }>;
+  perspectiveRole: "CLIENT" | "FREELANCER" | "ADMIN";
+}
+
+export async function getUserFeedRequest(userId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/users/${userId}/feed`);
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load user profile feed"));
+  }
+
+  return (await response.json()) as UserFeedProfile;
 }
 
 export async function createProjectRequest(

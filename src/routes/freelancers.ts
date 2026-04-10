@@ -6,10 +6,14 @@ import { validateBody, validateParams, validateQuery } from "../middleware/valid
 import {
   freelancerIdParamSchema,
   freelancerListQuerySchema,
+  freelancerProjectSuggestionBodySchema,
   freelancerRecommendationBodySchema,
 } from "../schemas/freelancer.schema";
 
 const router = Router();
+const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_DESCRIPTION_MODEL = "llama-3.1-8b-instant";
+const GROQ_TIMEOUT_MS = 20_000;
 
 function extractKeywords(input: string) {
   const stopWords = new Set([
@@ -83,6 +87,214 @@ function toMatchScore(input: {
     reasons,
   };
 }
+
+function truncate(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3).trim()}...`;
+}
+
+function toFallbackSuggestion(input: {
+  title?: string;
+  description: string;
+  acceptanceCriteria?: string;
+  allowedLanguages: string[];
+}) {
+  const cleanedDescription = input.description.trim().replace(/\s+/g, " ");
+  const fallbackTitle = cleanedDescription
+    .split(/[.!?]/)[0]
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 10)
+    .join(" ");
+
+  const suggestedTitle = truncate(
+    input.title?.trim() || fallbackTitle || "Implementation Bounty",
+    120,
+  );
+
+  const languageLine = input.allowedLanguages.length > 0
+    ? `Preferred languages: ${input.allowedLanguages.join(", ")}.`
+    : "Preferred languages: match existing repository stack.";
+
+  const suggestedDescription = [
+    `Goal: ${cleanedDescription.endsWith(".") ? cleanedDescription : `${cleanedDescription}.`}`,
+    "",
+    "Scope:",
+    "- Deliver production-ready code aligned to the repository structure.",
+    "- Include testing or validation updates for changed behavior.",
+    `- ${languageLine}`,
+    "",
+    "Deliverables:",
+    "- Updated source code and implementation notes.",
+    "- Short summary of trade-offs and edge-case handling.",
+  ].join("\n");
+
+  const suggestedAcceptanceCriteria =
+    input.acceptanceCriteria && input.acceptanceCriteria.trim().length >= 30
+      ? input.acceptanceCriteria.trim()
+      : [
+          "- Required functionality is fully implemented and verified.",
+          "- Code quality standards are met and lint/build checks pass.",
+          "- Documentation explains setup, usage, and expected outputs.",
+          "- Changes avoid regressions in existing critical flows.",
+        ].join("\n");
+
+  return {
+    suggestedTitle,
+    suggestedDescription,
+    suggestedAcceptanceCriteria,
+  };
+}
+
+function parseAiJson(content: string) {
+  const trimmed = content.trim();
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace <= firstBrace) {
+    throw new Error("Invalid AI response payload");
+  }
+
+  return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1)) as {
+    title?: string;
+    description?: string;
+    acceptance_criteria?: string;
+  };
+}
+
+async function requestAiProjectSuggestion(input: {
+  title?: string;
+  description: string;
+  acceptanceCriteria?: string;
+  allowedLanguages: string[];
+}) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY is missing");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
+
+  try {
+    const prompt = [
+      "Improve a bounty posting for a software freelancer marketplace.",
+      "Return valid JSON only with keys: title, description, acceptance_criteria.",
+      "Keep title <= 120 chars, description 120-1200 chars, acceptance_criteria as concise bullet points.",
+      `Draft title: ${input.title?.trim() || "(none)"}`,
+      `Draft description: ${input.description}`,
+      `Draft acceptance criteria: ${input.acceptanceCriteria?.trim() || "(none)"}`,
+      `Preferred languages: ${input.allowedLanguages.length > 0 ? input.allowedLanguages.join(", ") : "(unspecified)"}`,
+    ].join("\n");
+
+    const response = await fetch(GROQ_CHAT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: GROQ_DESCRIPTION_MODEL,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an expert technical project writer. Convert rough client notes into clear, scoped engineering bounty descriptions.",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`AI request failed (${response.status})`);
+    }
+
+    const body = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = body.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("AI response is empty");
+    }
+
+    const parsed = parseAiJson(content);
+    if (!parsed.description || !parsed.acceptance_criteria) {
+      throw new Error("AI response missing required fields");
+    }
+
+    return {
+      suggestedTitle: truncate(parsed.title?.trim() || input.title?.trim() || "Implementation Bounty", 120),
+      suggestedDescription: parsed.description.trim(),
+      suggestedAcceptanceCriteria: parsed.acceptance_criteria.trim(),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+router.post(
+  "/project-description-suggestion",
+  requireAuth,
+  validateBody(freelancerProjectSuggestionBodySchema),
+  async (request, response, next) => {
+    try {
+      if (!request.user) {
+        throw new AppError(401, 401, "Unauthorized");
+      }
+      if (request.user.role !== "client" && request.user.role !== "admin") {
+        throw new AppError(403, 403, "Only client/admin roles can request project suggestions");
+      }
+
+      const body = request.body as {
+        title?: string;
+        description: string;
+        acceptance_criteria?: string;
+        allowed_languages?: string[];
+      };
+
+      const allowedLanguages = (body.allowed_languages ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+      const fallback = toFallbackSuggestion({
+        title: body.title,
+        description: body.description,
+        acceptanceCriteria: body.acceptance_criteria,
+        allowedLanguages,
+      });
+
+      try {
+        const aiSuggestion = await requestAiProjectSuggestion({
+          title: body.title,
+          description: body.description,
+          acceptanceCriteria: body.acceptance_criteria,
+          allowedLanguages,
+        });
+
+        return response.status(200).json({
+          data: {
+            ...aiSuggestion,
+            aiUsed: true,
+          },
+        });
+      } catch {
+        return response.status(200).json({
+          data: {
+            ...fallback,
+            aiUsed: false,
+          },
+        });
+      }
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 router.post(
   "/recommendations",

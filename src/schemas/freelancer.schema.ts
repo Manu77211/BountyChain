@@ -17,4 +17,11 @@ export const freelancerRecommendationBodySchema = z.object({
   limit: z.number().int().min(1).max(20).default(6),
 });
 
+export const freelancerProjectSuggestionBodySchema = z.object({
+  title: z.string().trim().min(3).max(120).optional(),
+  description: z.string().trim().min(12).max(3000),
+  acceptance_criteria: z.string().trim().max(4000).optional(),
+  allowed_languages: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+});
+
 export type FreelancerListQuery = z.infer<typeof freelancerListQuerySchema>;
