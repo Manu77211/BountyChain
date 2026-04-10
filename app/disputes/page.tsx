@@ -8,6 +8,8 @@ import { Protected } from "../../components/protected";
 import { Button, Card, Input, PageIntro, Pill } from "../../components/ui/primitives";
 import { useAuthStore } from "../../store/auth-store";
 
+export const dynamic = "force-dynamic";
+
 type DisputeListItem = {
   id: string;
   bounty_title: string;

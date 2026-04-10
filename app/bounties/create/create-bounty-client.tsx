@@ -1,10 +1,3 @@
-import { connection } from "next/server";
-import CreateBountyClientPage from "./create-bounty-client";
-
-export default async function CreateBountyPage() {
-  await connection();
-  return <CreateBountyClientPage />;
-}
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -27,8 +20,6 @@ import {
 import { MICRO_ALGO_PER_ALGO, fromMicroAlgo, toMicroAlgo } from "../../../lib/algo";
 import { useAuthStore } from "../../../store/auth-store";
 import { AppShell } from "../../../src/components/layout/AppShell";
-
-export const dynamic = "force-dynamic";
 
 const STORAGE_KEY = "bounty-create-form-v1";
 const STEPS = ["Basics", "Technical Config", "Payment & Timeline", "Review & Fund"];

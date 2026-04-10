@@ -9,6 +9,7 @@ import {
   GitPullRequest,
   LayoutDashboard,
   Layers,
+  MessageSquare,
   Moon,
   Plus,
   Scale,
@@ -117,6 +118,12 @@ export function Sidebar({ activeDisputes = 0 }: { activeDisputes?: number }) {
         href: "/dashboard/projects",
         label: "Applications",
         icon: <Layers size={16} />,
+        visible: true,
+      },
+      {
+        href: "/dashboard/chat",
+        label: "Conversations",
+        icon: <MessageSquare size={16} />,
         visible: true,
       },
       {

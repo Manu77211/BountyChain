@@ -1,7 +1,10 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { Button, Card, PageIntro } from "../../../../components/ui/primitives";
 
-export default function WalletWithdrawPage() {
+export default async function WalletWithdrawPage() {
+  await connection();
+
   return (
     <section className="space-y-6">
       <PageIntro title="Withdraw" subtitle="Move released earnings from wallet to your connected account." />

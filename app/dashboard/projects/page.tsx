@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  discoverOpenProjectsRequest,
   listMyProjectApplicationsRequest,
   listProjectsRequest,
 } from "../../../lib/api";
+import { formatAlgoWithMicro } from "../../../lib/algo";
 import { useAuthStore } from "../../../store/auth-store";
 import { Button, Card, Input, PageIntro, Pill, Select } from "../../../components/ui/primitives";
 
@@ -46,19 +46,6 @@ type ClientBounty = {
   };
 };
 
-type OpenBounty = {
-  id: string;
-  title: string;
-  status: string;
-  criteria?: {
-    totalAmountMicroAlgo?: number;
-    deadline?: string;
-  };
-  client?: {
-    name?: string;
-  };
-};
-
 function asDate(value?: string) {
   if (!value) {
     return "-";
@@ -80,7 +67,6 @@ export default function DashboardApplicationsPage() {
   const isFreelancer = role === "FREELANCER";
 
   const [applications, setApplications] = useState<BountyApplication[]>([]);
-  const [openBounties, setOpenBounties] = useState<OpenBounty[]>([]);
   const [clientBounties, setClientBounties] = useState<ClientBounty[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [query, setQuery] = useState("");
@@ -101,19 +87,13 @@ export default function DashboardApplicationsPage() {
 
     try {
       if (isFreelancer) {
-        const [applied, market] = await Promise.all([
-          listMyProjectApplicationsRequest(token),
-          discoverOpenProjectsRequest(token),
-        ]);
-
+        const applied = await listMyProjectApplicationsRequest(token);
         setApplications((applied as BountyApplication[]) ?? []);
-        setOpenBounties((market as OpenBounty[]) ?? []);
         setClientBounties([]);
       } else {
         const data = await listProjectsRequest(token);
         setClientBounties((data as ClientBounty[]) ?? []);
         setApplications([]);
-        setOpenBounties([]);
       }
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -140,17 +120,13 @@ export default function DashboardApplicationsPage() {
     return filterByText(clientBounties, (entry) => entry.title, query);
   }, [clientBounties, query]);
 
-  const openBountyPreview = useMemo(() => {
-    return filterByText(openBounties, (entry) => `${entry.title} ${entry.client?.name ?? ""}`, query).slice(0, 8);
-  }, [openBounties, query]);
-
   return (
     <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
       <PageIntro
         title={isFreelancer ? "My Bounty Applications" : "Bounty Application Pipeline"}
         subtitle={
           isFreelancer
-            ? "See every bounty you applied to and track status in realtime."
+            ? "See every bounty you applied to and track application status in realtime."
             : "Monitor all applications across your bounties."
         }
       />
@@ -206,12 +182,15 @@ export default function DashboardApplicationsPage() {
                     <td className="py-3 pr-4"><Pill text={entry.application.status} /></td>
                     <td className="py-3 pr-4"><Pill text={entry.project.status} /></td>
                     <td className="py-3 pr-4">
-                      {entry.application.proposedAmount ? `${entry.application.proposedAmount} microALGO` : "-"}
+                      {entry.application.proposedAmount ? formatAlgoWithMicro(entry.application.proposedAmount) : "-"}
                     </td>
                     <td className="py-3">
                       <div className="flex gap-2">
                         <Button asChild variant="secondary" className="h-8 px-3 text-xs">
                           <Link href={`/bounties/${entry.project.id}`}>View Bounty</Link>
+                        </Button>
+                        <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+                          <Link href={`/dashboard/chat/${entry.project.id}?applicationId=${entry.application.id}`}>Chat Client</Link>
                         </Button>
                         {String(entry.application.status).toUpperCase() === "SELECTED" ? (
                           <Button asChild className="h-8 px-3 text-xs">
@@ -229,6 +208,13 @@ export default function DashboardApplicationsPage() {
           {!loading && filteredApplications.length === 0 ? (
             <p className="mt-3 text-sm text-[#4b4b4b]">No applications found for the current filter.</p>
           ) : null}
+
+          <p className="mt-3 text-xs text-[#4b4b4b]">
+            Need new opportunities? Browse and apply from the bounties board.
+          </p>
+          <Button asChild variant="secondary" className="mt-2 h-8 px-3 text-xs">
+            <Link href="/bounties">Open Bounty Board</Link>
+          </Button>
         </Card>
       ) : (
         <Card>
@@ -266,29 +252,6 @@ export default function DashboardApplicationsPage() {
           ) : null}
         </Card>
       )}
-
-      {isFreelancer ? (
-        <Card>
-          <h3 className="text-lg font-semibold">Open Bounties to Apply</h3>
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
-            {openBountyPreview.map((item) => (
-              <div key={item.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="font-semibold">{item.title}</p>
-                  <Pill text={item.status} />
-                </div>
-                <p className="mt-1 text-xs text-[#4b4b4b]">Client {item.client?.name ?? "Unknown"}</p>
-                <p className="mt-1 text-xs text-[#4b4b4b]">Budget {item.criteria?.totalAmountMicroAlgo ?? 0} microALGO</p>
-                <div className="mt-3">
-                  <Button asChild variant="secondary" className="h-8 px-3 text-xs">
-                    <Link href={`/bounties/${item.id}`}>Open Bounty</Link>
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
     </motion.section>
   );
 }

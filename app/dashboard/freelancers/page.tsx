@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { discoverOpenProjectsRequest, listBountiesRequest, listFreelancersRequest } from "../../../lib/api";
+import { formatAlgoWithMicro } from "../../../lib/algo";
 import { useAuthStore } from "../../../store/auth-store";
 import { Button, Card, Input, PageIntro, Pill } from "../../../components/ui/primitives";
 
@@ -183,7 +184,7 @@ export default function DashboardFreelancersPage() {
                     <Pill text={item.status} />
                   </div>
                   <p className="mt-1 text-xs text-[#4b4b4b]">
-                    Amount {item.total_amount ?? "0"} microALGO | {item.scoring_mode ?? "hybrid"}
+                    Amount {formatAlgoWithMicro(item.total_amount)} | {item.scoring_mode ?? "hybrid"}
                   </p>
                   <p className="mt-1 text-xs text-[#4b4b4b]">
                     Deadline {item.deadline ? new Date(item.deadline).toLocaleString() : "Not specified"}

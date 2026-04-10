@@ -1,7 +1,7 @@
 "use client";
 
 import { GitPullRequest, RefreshCw } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ProgressBar } from "../ui/primitives";
 
 type Submission = {
@@ -73,6 +73,18 @@ function ciBadgeClass(status: string) {
 }
 
 export function SubmissionCard({ submission, aiThreshold, isClient, onFlagScore, onRetriggerCi }: SubmissionCardProps) {
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const scoreBreakdown = useMemo(() => {
     const raw = submission.ai_score_raw;
     return {
@@ -87,20 +99,20 @@ export function SubmissionCard({ submission, aiThreshold, isClient, onFlagScore,
     if (!isClient || !submission.score_finalized_at || submission.client_flagged_at) {
       return false;
     }
-    const elapsed = Date.now() - new Date(submission.score_finalized_at).getTime();
+    const elapsed = nowMs - new Date(submission.score_finalized_at).getTime();
     return elapsed < 48 * 60 * 60 * 1000;
-  }, [isClient, submission.client_flagged_at, submission.score_finalized_at]);
+  }, [isClient, nowMs, submission.client_flagged_at, submission.score_finalized_at]);
 
   const flagCountdown = useMemo(() => {
     if (!submission.score_finalized_at) {
       return null;
     }
     const expiresAt = new Date(submission.score_finalized_at).getTime() + 48 * 60 * 60 * 1000;
-    const remaining = Math.max(0, expiresAt - Date.now());
+    const remaining = Math.max(0, expiresAt - nowMs);
     const hours = Math.floor(remaining / (1000 * 60 * 60));
     const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
     return `${hours}h ${minutes}m`;
-  }, [submission.score_finalized_at]);
+  }, [nowMs, submission.score_finalized_at]);
 
   const finalScore = submission.final_score ?? 0;
   const passed = finalScore >= aiThreshold;

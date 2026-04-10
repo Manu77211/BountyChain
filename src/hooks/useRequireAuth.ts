@@ -16,7 +16,14 @@ export function useRequireAuth() {
 
   useEffect(() => {
     hydrate();
-    setIsHydrating(false);
+
+    const timer = window.setTimeout(() => {
+      setIsHydrating(false);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [hydrate]);
 
   useEffect(() => {

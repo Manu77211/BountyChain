@@ -135,56 +135,60 @@ router.get("/nonce", (request, response) => {
   });
 });
 
-router.get("/me", requireAuth, async (request, response) => {
-  if (!request.user) {
-    return response.status(401).json({
-      error: "Unauthorized",
-      code: 401,
-      detail: "Login required",
+router.get("/me", requireAuth, async (request, response, next) => {
+  try {
+    if (!request.user) {
+      return response.status(401).json({
+        error: "Unauthorized",
+        code: 401,
+        detail: "Login required",
+      });
+    }
+
+    const result = await dbQuery<{
+      id: string;
+      email: string | null;
+      wallet_address: string;
+      role: UserRole;
+      reputation_score: number;
+      display_name: string | null;
+    }>(
+      `
+        SELECT id, email, wallet_address, role, reputation_score, display_name
+        FROM users
+        WHERE id = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [request.user.userId],
+    );
+
+    if ((result.rowCount ?? 0) === 0) {
+      return response.status(404).json({
+        error: "Not found",
+        code: 404,
+        detail: "User not found",
+      });
+    }
+
+    const user = result.rows[0];
+    return response.status(200).json({
+      user: {
+        id: user.id,
+        name: user.display_name ?? user.email ?? "BountyEscrow User",
+        email: user.email ?? "",
+        role: toClientRole(user.role),
+        skills: [],
+        rating: Number((user.reputation_score / 20).toFixed(2)),
+        trustScore: user.reputation_score,
+        experience: "",
+        portfolio: [],
+        wallet_address: user.wallet_address,
+      },
     });
+  } catch (error) {
+    return next(error);
   }
-
-  const result = await dbQuery<{
-    id: string;
-    email: string | null;
-    wallet_address: string;
-    role: UserRole;
-    reputation_score: number;
-    display_name: string | null;
-  }>(
-    `
-      SELECT id, email, wallet_address, role, reputation_score, display_name
-      FROM users
-      WHERE id = $1
-        AND deleted_at IS NULL
-      LIMIT 1
-    `,
-    [request.user.userId],
-  );
-
-  if ((result.rowCount ?? 0) === 0) {
-    return response.status(404).json({
-      error: "Not found",
-      code: 404,
-      detail: "User not found",
-    });
-  }
-
-  const user = result.rows[0];
-  return response.status(200).json({
-    user: {
-      id: user.id,
-      name: user.display_name ?? user.email ?? "BountyEscrow User",
-      email: user.email ?? "",
-      role: toClientRole(user.role),
-      skills: [],
-      rating: Number((user.reputation_score / 20).toFixed(2)),
-      trustScore: user.reputation_score,
-      experience: "",
-      portfolio: [],
-      wallet_address: user.wallet_address,
-    },
-  });
 });
 
 router.post("/register", validateBody(registerSchema), async (request, response, next) => {

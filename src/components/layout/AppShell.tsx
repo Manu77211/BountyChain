@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { GitPullRequest, Layers, LayoutDashboard, Plus, Scale, Shield, Trophy, User, X } from "lucide-react";
+import { GitPullRequest, Layers, LayoutDashboard, MessageSquare, Plus, Scale, Shield, Trophy, User, X } from "lucide-react";
 import { useAuthStore } from "../../../store/auth-store";
 import { useUiStore } from "../../../store/ui-store";
 import { useRequireAuth } from "../../hooks/useRequireAuth";
@@ -44,6 +44,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return [
       { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={16} />, visible: true },
       { href: "/dashboard/projects", label: "Applications", icon: <Layers size={16} />, visible: true },
+      { href: "/dashboard/chat", label: "Conversations", icon: <MessageSquare size={16} />, visible: true },
       { href: "/bounties", label: "Bounties", icon: <Trophy size={16} />, visible: true },
       { href: "/bounties/create", label: "Post Bounty", icon: <Plus size={16} />, visible: isClient },
       { href: "/submissions", label: "My Work", icon: <GitPullRequest size={16} />, visible: isFreelancer },

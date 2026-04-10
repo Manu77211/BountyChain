@@ -4,6 +4,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
 import { listBountiesRequest, listMyBountiesRequest, meRequest, meStatsRequest } from "../../lib/api";
+import { formatAlgo } from "../../lib/algo";
 import { useRealtimeChannel } from "../../lib/realtime-client";
 import { useAuthStore } from "../../store/auth-store";
 import { Button, Card, PageIntro, Pill, ProgressBar } from "../../components/ui/primitives";
@@ -139,7 +140,8 @@ export default function DashboardPage() {
         </Card>
         <Card className="p-5">
           <p className="text-sm text-[#4b4b4b]">Funds Tracked</p>
-          <p className="mt-2 text-3xl font-semibold">{escrowTotal.toFixed(0)}</p>
+          <p className="mt-2 text-3xl font-semibold">{formatAlgo(escrowTotal, 2)} ALGO</p>
+          <p className="mt-1 text-xs text-[#4b4b4b]">1 ALGO = 1,000,000 microALGO</p>
         </Card>
         <Card className="p-5">
           <p className="text-sm text-[#4b4b4b]">Disputed</p>

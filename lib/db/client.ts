@@ -7,15 +7,9 @@ export const dbPool = DATABASE_URL
       connectionString: DATABASE_URL,
       max: 20,
       idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 5_000,
+      connectionTimeoutMillis: 20_000,
     })
   : null;
-
-if (dbPool) {
-  dbPool.on("connect", (client) => {
-    void client.query("SET TIME ZONE 'UTC'");
-  });
-}
 
 function assertDbPool() {
   if (!dbPool) {
@@ -24,11 +18,45 @@ function assertDbPool() {
   return dbPool;
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message.toLowerCase() : "";
+}
+
+function isReadOnlyQuery(text: string) {
+  return /^\s*select\b/i.test(text);
+}
+
+function isTransientConnectionError(error: unknown) {
+  const message = getErrorMessage(error);
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "").toUpperCase()
+    : "";
+
+  return (
+    message.includes("connection terminated due to connection timeout") ||
+    message.includes("connection timeout") ||
+    message.includes("terminating connection") ||
+    message.includes("connection reset") ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET"
+  );
+}
+
 export async function dbQuery<T extends QueryResultRow>(
   text: string,
   params: unknown[] = [],
 ): Promise<QueryResult<T>> {
-  return assertDbPool().query<T>(text, params);
+  const pool = assertDbPool();
+
+  try {
+    return await pool.query<T>(text, params);
+  } catch (error) {
+    if (!isReadOnlyQuery(text) || !isTransientConnectionError(error)) {
+      throw error;
+    }
+
+    return pool.query<T>(text, params);
+  }
 }
 
 export async function withTransaction<T>(

@@ -38,6 +38,10 @@ export const extendDeadlineSchema = z.object({
   deadline: z.coerce.date(),
 });
 
+export const raiseBountyAmountSchema = z.object({
+  new_total_amount: z.coerce.bigint().refine((value) => value > 0n, "new_total_amount must be > 0"),
+});
+
 export const acceptBountySchema = z.object({
   github_pr_url: z.string().url(),
   github_branch: z.string().trim().min(1),

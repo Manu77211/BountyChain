@@ -266,11 +266,50 @@ export async function listFreelancersRequest(params: { skills?: string; rating?:
   return response.json();
 }
 
+export async function recommendFreelancersRequest(
+  token: string,
+  payload: {
+    description: string;
+    allowed_languages?: string[];
+    min_rating?: number;
+    limit?: number;
+  },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/freelancers/recommendations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to recommend freelancers"));
+  }
+
+  return response.json();
+}
+
 export async function getFreelancerRequest(freelancerId: string) {
   const response = await safeFetch(`${API_BASE_URL}/freelancers/${freelancerId}`);
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to load freelancer"));
   }
+  return response.json();
+}
+
+export async function getPublicUserProfileRequest(token: string, userId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/users/${userId}/public`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load user profile"));
+  }
+
   return response.json();
 }
 
@@ -571,9 +610,16 @@ export async function retriggerSubmissionCiRequest(token: string, submissionId: 
 export interface ProjectMessage {
   id: string;
   projectId: string;
+  applicationId: string | null;
+  scope: "BOUNTY" | "APPLICATION";
   senderId: string;
   content: string;
   fileUrl: string | null;
+  attachment: {
+    name: string | null;
+    size: number | null;
+    type: string | null;
+  } | null;
   createdAt: string;
   sender: {
     id: string;
@@ -582,8 +628,53 @@ export interface ProjectMessage {
   };
 }
 
-export async function listProjectMessagesRequest(token: string, projectId: string) {
-  const response = await safeFetch(`${API_BASE_URL}/projects/${projectId}/messages`, {
+export interface ProjectConversation {
+  id: string;
+  projectId: string;
+  applicationId: string | null;
+  scope: "BOUNTY" | "APPLICATION";
+  title: string;
+  counterpartName: string | null;
+  counterpartId: string | null;
+  counterpartRole: "CLIENT" | "FREELANCER" | null;
+  status: string;
+  updatedAt: string;
+  lastMessage: {
+    id: string;
+    content: string;
+    fileUrl: string | null;
+    createdAt: string;
+    senderName: string;
+    senderId: string;
+  } | null;
+}
+
+export async function listProjectConversationsRequest(token: string) {
+  const response = await safeFetch(`${API_BASE_URL}/projects/conversations`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load conversations"));
+  }
+
+  return (await response.json()) as ProjectConversation[];
+}
+
+export async function listProjectMessagesRequest(
+  token: string,
+  projectId: string,
+  params?: { applicationId?: string },
+) {
+  const search = new URLSearchParams();
+  if (params?.applicationId) {
+    search.set("applicationId", params.applicationId);
+  }
+
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await safeFetch(`${API_BASE_URL}/projects/${projectId}/messages${suffix}`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },
@@ -767,6 +858,29 @@ export async function extendBountyDeadlineRequest(token: string, bountyId: strin
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to extend deadline"));
+  }
+
+  return response.json();
+}
+
+export async function raiseBountyAmountRequest(
+  token: string,
+  bountyId: string,
+  newTotalAmountMicroAlgo: string,
+) {
+  const response = await safeFetch(`${API_BASE_URL}/bounties/${bountyId}/raise-amount`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...withAuth(token),
+    },
+    body: JSON.stringify({
+      new_total_amount: newTotalAmountMicroAlgo,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to raise bounty amount"));
   }
 
   return response.json();

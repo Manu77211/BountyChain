@@ -1,6 +1,7 @@
 "use client";
 
-import { Menu } from "lucide-react";
+import Link from "next/link";
+import { Menu, MessageSquare } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { GlobalSearch } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
@@ -30,6 +31,14 @@ export function Topbar({ token, onOpenMobileMenu }: { token: string | null; onOp
         <GlobalSearch token={token} />
 
         <div className="flex items-center gap-2">
+          <Link
+            href="/dashboard/chat"
+            className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-border bg-surface-1 px-3 text-text-primary hover:bg-surface-3"
+            aria-label="Open conversations"
+          >
+            <MessageSquare size={14} />
+            <span className="hidden text-xs font-semibold sm:inline">Chats</span>
+          </Link>
           <span className="hidden rounded-full border border-border bg-surface-0 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-brand-400 sm:inline-flex">
             {network}
           </span>

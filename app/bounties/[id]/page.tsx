@@ -5,7 +5,7 @@ import confetti from "canvas-confetti";
 import { Code2, Copy, Loader2, Share2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { io, type Socket } from "socket.io-client";
 import { MilestoneList } from "../../../components/bounties/MilestoneList";
@@ -21,8 +21,10 @@ import {
   getBountyContextRequest,
   getBountyRequest,
   openDisputeRequest,
+  raiseBountyAmountRequest,
   retriggerSubmissionCiRequest,
 } from "../../../lib/api";
+import { formatAlgo, formatAlgoWithMicro, toMicroAlgo } from "../../../lib/algo";
 import { useAuthStore } from "../../../store/auth-store";
 import { AppShell } from "../../../src/components/layout/AppShell";
 
@@ -140,6 +142,8 @@ export default function BountyDetailPage() {
   const [acceptBranch, setAcceptBranch] = useState("main");
   const [acceptRepoId, setAcceptRepoId] = useState("1");
   const [accepting, setAccepting] = useState(false);
+  const [raiseAmountAlgo, setRaiseAmountAlgo] = useState("1");
+  const [raisingAmount, setRaisingAmount] = useState(false);
 
   useEffect(() => {
     hydrate();
@@ -156,7 +160,7 @@ export default function BountyDetailPage() {
 
   const hasMilestones = milestones.length > 0;
 
-  async function loadBounty() {
+  const loadBounty = useCallback(async () => {
     if (!bountyId || !token) {
       return;
     }
@@ -179,16 +183,17 @@ export default function BountyDetailPage() {
       setSubmissionsCount(context.submissions_count ?? 0);
       setActiveSubmissionCount(context.active_submission_count ?? 0);
       setAcceptBranch(detailBounty.target_branch || "main");
+      setRaiseAmountAlgo(formatAlgo(detailBounty.total_amount, 2));
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
       setLoading(false);
     }
-  }
+  }, [bountyId, token]);
 
   useEffect(() => {
     void loadBounty();
-  }, [bountyId, token]);
+  }, [loadBounty]);
 
   useEffect(() => {
     if (!bountyId || !token) {
@@ -259,7 +264,7 @@ export default function BountyDetailPage() {
       socket.emit("leave", `bounty:${bountyId}`);
       socket.disconnect();
     };
-  }, [bountyId, token]);
+  }, [bountyId, loadBounty, token]);
 
   async function onAcceptSubmission(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -360,12 +365,37 @@ export default function BountyDetailPage() {
     }
   }
 
+  async function onRaiseAmount() {
+    if (!token || !bounty) {
+      return;
+    }
+
+    const parsed = Number(raiseAmountAlgo);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setError("Enter a valid ALGO amount.");
+      return;
+    }
+
+    const nextMicroAlgo = String(toMicroAlgo(parsed));
+
+    setRaisingAmount(true);
+    setError(null);
+    try {
+      await raiseBountyAmountRequest(token, bounty.id, nextMicroAlgo);
+      setToast("Bounty amount raised successfully.");
+      await loadBounty();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setRaisingAmount(false);
+    }
+  }
+
   async function copyShareLink() {
     await navigator.clipboard.writeText(window.location.href);
     setToast("Link copied.");
   }
 
-  const canAccept = isFreelancer && bounty?.status === "open" && !mySubmission && !isCreator;
   const takenSingleSlot = Boolean(bounty && bounty.max_freelancers === 1 && activeSubmissionCount >= 1);
   const canDispute = Boolean(
     mySubmission &&
@@ -403,7 +433,7 @@ export default function BountyDetailPage() {
                       </div>
                       <span>{creatorWallet} - Posted {timeAgo(bounty.created_at)}</span>
                     </div>
-                    <span className="text-sm font-black text-[#6e5a00]">{Number(bounty.total_amount) / 1_000_000} ALGO</span>
+                    <span className="text-sm font-black text-[#6e5a00]">{formatAlgoWithMicro(bounty.total_amount, 2)}</span>
                     <span className="rounded border border-[#121212] bg-[#f8f8f8] px-2 py-1">{remaining(bounty.deadline)}</span>
                     <button type="button" className="inline-flex items-center gap-1 underline" onClick={() => void copyShareLink()}>
                       <Share2 size={14} /> Share <Copy size={12} />
@@ -608,6 +638,27 @@ export default function BountyDetailPage() {
                   {isClient ? (
                     <Card className="space-y-3">
                       <p className="text-sm font-semibold">Bounty Management</p>
+                      <div className="space-y-2 border border-[#121212] bg-[#f7fbff] p-2">
+                        <p className="text-xs font-semibold">Raise Bounty Amount</p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0.1}
+                            step={0.1}
+                            className="w-full border border-[#121212] px-2 py-1 text-sm"
+                            value={raiseAmountAlgo}
+                            onChange={(event) => setRaiseAmountAlgo(event.target.value)}
+                          />
+                          <span className="text-xs font-semibold">ALGO</span>
+                        </div>
+                        <p className="text-[11px] text-[#4b4b4b]">
+                          Current {formatAlgoWithMicro(bounty.total_amount, 2)}. Enter a higher ALGO amount.
+                        </p>
+                        <Button variant="secondary" className="w-full" onClick={() => void onRaiseAmount()} disabled={raisingAmount}>
+                          {raisingAmount ? "Updating..." : "Raise Amount"}
+                        </Button>
+                      </div>
+
                       <Button
                         variant="secondary"
                         className="w-full"

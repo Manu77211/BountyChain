@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listBountiesRequest } from "../../lib/api";
+import { formatAlgoWithMicro } from "../../lib/algo";
 import { MarketingPageShell } from "../../components/marketing/page-shell";
 
 type MarketplaceBounty = {
@@ -61,7 +62,7 @@ export default function ForFreelancersPage() {
 
   return (
     <MarketingPageShell
-      title="For Freelancers"
+      title="Bounties"
       subtitle="Browse all client bounties and projects, inspect requirements, and open separate detail pages before you apply."
     >
       <section className="bg-[#f0f0f0] py-14" style={{ borderBottom: "4px solid #121212" }}>
@@ -81,10 +82,10 @@ export default function ForFreelancersPage() {
               Refresh
             </button>
             <Link
-              href="/dashboard/freelancers"
+              href="/marketplace"
               className="inline-flex items-center justify-center border-2 border-[#121212] bg-[#f0c020] px-4 py-2.5 text-sm font-black uppercase tracking-wide text-[#121212]"
             >
-              Open Full Marketplace
+              Open Global Marketplace
             </Link>
           </div>
 
@@ -104,7 +105,7 @@ export default function ForFreelancersPage() {
                 </div>
                 <p className="mt-3 text-sm text-[#2a2a2a]">{bounty.description}</p>
                 <p className="mt-3 text-xs text-[#4b4b4b]">
-                  {bounty.total_amount} microALGO | {bounty.scoring_mode}
+                  {formatAlgoWithMicro(bounty.total_amount)} | {bounty.scoring_mode}
                 </p>
                 <p className="mt-1 text-xs text-[#4b4b4b]">Deadline: {new Date(bounty.deadline).toLocaleString()}</p>
                 <p className="mt-1 text-xs text-[#4b4b4b]">

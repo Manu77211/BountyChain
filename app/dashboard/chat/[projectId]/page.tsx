@@ -1,30 +1,74 @@
 "use client";
 
-import { io, Socket } from "socket.io-client";
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { io, type Socket } from "socket.io-client";
+import Image from "next/image";
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { listProjectMessagesRequest, ProjectMessage, SOCKET_BASE_URL } from "../../../../lib/api";
+import { useParams, useSearchParams } from "next/navigation";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  listProjectConversationsRequest,
+  listProjectMessagesRequest,
+  type ProjectConversation,
+  type ProjectMessage,
+  SOCKET_BASE_URL,
+} from "../../../../lib/api";
 import { useAuthStore } from "../../../../store/auth-store";
-import { Button, Card, Input, PageIntro, Pill } from "../../../../components/ui/primitives";
+import { Button, Card, PageIntro, Textarea } from "../../../../components/ui/primitives";
 
 type JoinAck = { ok: boolean; message?: string };
 type SendAck = { ok: boolean; message?: string };
 
+type SelectedAttachment = {
+  dataUrl: string;
+  name: string;
+  size: number;
+  type: string;
+};
+
+function toDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Unable to read selected file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatBytes(bytes: number | null | undefined) {
+  if (!bytes || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
 export default function DashboardChatPage() {
   const params = useParams<{ projectId: string }>();
-  const projectId = params.projectId;
+  const searchParams = useSearchParams();
+  const projectId = params.projectId ?? "";
+  const applicationId = searchParams.get("applicationId")?.trim() || "";
 
   const { token, user, hydrate } = useAuthStore();
+  const [conversations, setConversations] = useState<ProjectConversation[]>([]);
   const [messages, setMessages] = useState<ProjectMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState("");
-  const [fileUrl, setFileUrl] = useState("");
+  const [attachment, setAttachment] = useState<SelectedAttachment | null>(null);
   const [sending, setSending] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const conversationScope = applicationId ? "APPLICATION" : "BOUNTY";
 
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
@@ -36,6 +80,23 @@ export default function DashboardChatPage() {
   }, [hydrate]);
 
   useEffect(() => {
+    async function loadConversations() {
+      if (!token) {
+        return;
+      }
+
+      try {
+        const data = await listProjectConversationsRequest(token);
+        setConversations(data ?? []);
+      } catch {
+        setConversations([]);
+      }
+    }
+
+    void loadConversations();
+  }, [token]);
+
+  useEffect(() => {
     if (!bottomRef.current) {
       return;
     }
@@ -43,54 +104,78 @@ export default function DashboardChatPage() {
   }, [sortedMessages]);
 
   useEffect(() => {
-    if (!token || !projectId) {
+    const authToken = token;
+    const activeProjectId = projectId;
+
+    if (!authToken || !activeProjectId) {
       return;
     }
-
-    const authToken = token;
-    const currentProjectId = projectId;
+    const resolvedToken: string = authToken;
+    const resolvedProjectId: string = activeProjectId;
 
     async function loadHistory() {
       setLoading(true);
       setError(null);
       try {
-        const data = await listProjectMessagesRequest(authToken, currentProjectId);
+        const data = await listProjectMessagesRequest(resolvedToken, resolvedProjectId, {
+          applicationId: applicationId || undefined,
+        });
         setMessages(data);
-      } catch (e) {
-        setError((e as Error).message);
+      } catch (requestError) {
+        setError((requestError as Error).message);
       } finally {
         setLoading(false);
       }
     }
 
     void loadHistory();
-  }, [token, projectId]);
+  }, [applicationId, projectId, token]);
 
   useEffect(() => {
-    if (!token || !projectId) {
+    const authToken = token;
+    const activeProjectId = projectId;
+
+    if (!authToken || !activeProjectId) {
       return;
     }
-
-    const authToken = token;
-    const currentProjectId = projectId;
+    const resolvedToken: string = authToken;
+    const resolvedProjectId: string = activeProjectId;
 
     const socket = io(SOCKET_BASE_URL, {
-      auth: { token: authToken },
+      auth: { token: resolvedToken },
       transports: ["websocket"],
     });
 
     socketRef.current = socket;
 
     socket.on("connect", () => {
-      socket.emit("project:join", currentProjectId, (ack: JoinAck) => {
-        if (!ack.ok) {
-          setError(ack.message ?? "Failed to join bounty chat room");
-        }
-      });
+      socket.emit(
+        "project:join",
+        {
+          projectId: resolvedProjectId,
+          applicationId: applicationId || undefined,
+        },
+        (ack: JoinAck) => {
+          if (!ack.ok) {
+            setError(ack.message ?? "Failed to join conversation");
+          }
+        },
+      );
     });
 
     socket.on("project:message:new", (message: ProjectMessage) => {
-      if (message.projectId !== currentProjectId) {
+      if (message.projectId !== resolvedProjectId) {
+        return;
+      }
+
+      if (conversationScope === "APPLICATION") {
+        if (String(message.scope).toUpperCase() !== "APPLICATION") {
+          return;
+        }
+        if ((message.applicationId ?? "") !== applicationId) {
+          return;
+        }
+      } else if (String(message.scope).toUpperCase() !== "BOUNTY") {
         return;
       }
 
@@ -111,13 +196,80 @@ export default function DashboardChatPage() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [token, projectId]);
+  }, [applicationId, conversationScope, projectId, token]);
+
+  async function onSelectFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (file.size > 1_500_000) {
+      setError("File size must be less than 1.5 MB for in-chat upload.");
+      return;
+    }
+
+    try {
+      const dataUrl = await toDataUrl(file);
+      setAttachment({
+        dataUrl,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      });
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  }
+
+  function isImageAttachment(message: ProjectMessage) {
+    const type = String(message.attachment?.type ?? "").toLowerCase();
+    if (type.startsWith("image/")) {
+      return true;
+    }
+
+    const url = String(message.fileUrl ?? "").toLowerCase();
+    return url.startsWith("data:image/") || /\.(png|jpg|jpeg|gif|webp|svg)(\?.*)?$/.test(url);
+  }
+
+  function conversationHref(item: ProjectConversation) {
+    if (!item.applicationId) {
+      return `/dashboard/chat/${item.projectId}`;
+    }
+    return `/dashboard/chat/${item.projectId}?applicationId=${item.applicationId}`;
+  }
+
+  function initials(value: string) {
+    const words = value.trim().split(/\s+/).slice(0, 2);
+    return words.map((word) => word.charAt(0).toUpperCase()).join("") || "C";
+  }
+
+  function profileHref(item: ProjectConversation | null) {
+    if (!item?.counterpartId) {
+      return null;
+    }
+    return `/dashboard/users/${item.counterpartId}`;
+  }
+
+  const activeConversation = useMemo(
+    () =>
+      conversations.find(
+        (item) => item.projectId === projectId && (item.applicationId ?? "") === applicationId,
+      ) ?? null,
+    [applicationId, conversations, projectId],
+  );
 
   async function onSendMessage(event: FormEvent) {
     event.preventDefault();
 
-    const nextContent = content.trim();
-    if (!nextContent || !socketRef.current || !projectId) {
+    if (!socketRef.current || !projectId) {
+      return;
+    }
+
+    const text = content.trim();
+    const filePayloadUrl = attachment?.dataUrl ?? "";
+
+    if (!text && !filePayloadUrl) {
       return;
     }
 
@@ -128,8 +280,12 @@ export default function DashboardChatPage() {
       "project:message:send",
       {
         projectId,
-        content: nextContent,
-        fileUrl: fileUrl.trim() || undefined,
+        applicationId: applicationId || undefined,
+        content: text || "Shared an attachment",
+        fileUrl: filePayloadUrl || undefined,
+        fileName: attachment?.name,
+        fileSize: attachment?.size,
+        fileType: attachment?.type,
       },
       (ack: SendAck) => {
         setSending(false);
@@ -137,97 +293,214 @@ export default function DashboardChatPage() {
           setError(ack.message ?? "Failed to send message");
           return;
         }
+
         setContent("");
-        setFileUrl("");
+        setAttachment(null);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
       },
     );
   }
 
-  function onFilePicked(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    const localPreviewUrl = URL.createObjectURL(file);
-    setFileUrl(localPreviewUrl);
-  }
-
   return (
-    <section className="grid gap-4 lg:grid-cols-[280px,1fr]">
-      <Card>
-        <p className="text-sm text-[#4b4b4b]">Bounty Chat</p>
-        <h1 className="mt-2 text-xl font-semibold">Bounty {projectId.slice(0, 8)}</h1>
-        <p className="mt-2 text-sm text-[#4b4b4b]">
-          Real-time collaboration for escrow-backed delivery. Every message is stored and auditable.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {user?.role ? <Pill text={user.role} /> : null}
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PageIntro
+          title={conversationScope === "APPLICATION" ? "Applicant Conversation" : "Bounty Conversation"}
+          subtitle="Real-time messaging with thread-level context and file sharing."
+        />
+        <div className="flex flex-wrap gap-2">
           <Button asChild variant="secondary" className="h-8 px-3 text-xs">
-            <Link href={`/dashboard/bounties/${projectId}`}>Back to Bounty</Link>
+            <Link href="/dashboard/chat">All Conversations</Link>
+          </Button>
+          <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+            <Link href={`/dashboard/projects/${projectId}`}>Bounty Workspace</Link>
           </Button>
         </div>
-      </Card>
+      </div>
 
-      <Card>
-        <PageIntro title="Conversation" subtitle="Discuss milestones, upload evidence, and keep client-freelancer communication transparent." />
-        {loading ? <p className="mt-3 text-[#4b4b4b]">Loading message history...</p> : null}
-        {error ? <p className="mt-3 text-sm text-[#8f1515]">{error}</p> : null}
+      {error ? <p className="text-sm text-[#8f1515]">{error}</p> : null}
 
-        <div className="mt-3 max-h-[460px] space-y-3 overflow-y-auto rounded-xl border border-[#121212] bg-[#f5f5f5] p-4">
-          {sortedMessages.length === 0 ? (
-            <p className="text-sm text-[#4b4b4b]">No messages yet. Start the bounty conversation.</p>
-          ) : null}
-
-          {sortedMessages.map((message) => {
-            const mine = user?.id === message.senderId;
-            return (
-              <div
-                key={message.id}
-                className={`max-w-[85%] rounded-xl border p-3 ${mine ? "ml-auto border-[#121212] bg-[#f0c020]" : "border-[#121212] bg-white"}`}
-              >
-                <div className="mb-1 flex items-center justify-between gap-3 text-xs text-[#4b4b4b]">
-                  <span>
-                    {message.sender.name} ({message.sender.role})
-                  </span>
-                  <span>{new Date(message.createdAt).toLocaleString()}</span>
-                </div>
-                <p className="text-sm text-[#121212]">{message.content}</p>
-                {message.fileUrl ? (
-                  <a
-                    href={message.fileUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 inline-block text-xs text-[#1040c0] underline"
+      <Card className="p-0">
+        <div className="grid min-h-[74vh] gap-0 md:grid-cols-[320px_1fr]">
+          <div className="border-b-2 border-[#121212] bg-[#f6f8fc] md:border-b-0 md:border-r-2">
+            <div className="border-b border-[#121212] p-3 text-xs font-semibold text-[#4b4b4b]">
+              Conversations
+            </div>
+            <div className="max-h-[30vh] overflow-y-auto md:max-h-[calc(74vh-41px)]">
+              {conversations.map((item) => {
+                const active = item.projectId === projectId && (item.applicationId ?? "") === applicationId;
+                return (
+                  <Link
+                    key={item.id}
+                    href={conversationHref(item)}
+                    className={`block border-b border-[#d6dbe5] px-3 py-3 ${
+                      active ? "bg-white" : "hover:bg-[#eef3ff]"
+                    }`}
                   >
-                    View Uploaded File
-                  </a>
+                    <div className="flex items-start gap-2">
+                      <div className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#121212] bg-[#fff3cd] text-xs font-bold">
+                        {initials(item.counterpartName ?? item.title)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-[#121212]">{item.title}</p>
+                        <p className="truncate text-xs text-[#4b4b4b]">
+                          {item.counterpartName
+                            ? `With ${item.counterpartName}${item.counterpartRole ? ` (${item.counterpartRole})` : ""}`
+                            : "Main bounty room"}
+                        </p>
+                        <p className="mt-1 truncate text-xs text-[#5b5b5b]">
+                          {item.lastMessage?.content ?? "No messages yet"}
+                        </p>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col bg-[linear-gradient(180deg,#f8fbff_0%,#ecf2ff_100%)]">
+            <div className="border-b border-[#121212] bg-white p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#121212] bg-[#fff3cd] text-xs font-bold">
+                    {initials(activeConversation?.counterpartName ?? activeConversation?.title ?? "Chat")}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-[#121212]">
+                      {activeConversation?.title ?? `Project ${projectId.slice(0, 8)}`}
+                    </p>
+                    <p className="text-xs text-[#4b4b4b]">
+                      {activeConversation?.counterpartName
+                        ? `With ${activeConversation.counterpartName}${activeConversation.counterpartRole ? ` (${activeConversation.counterpartRole})` : ""}`
+                        : conversationScope === "APPLICATION"
+                          ? "Private client-applicant thread"
+                          : "Main bounty thread"}
+                    </p>
+                  </div>
+                </div>
+
+                {profileHref(activeConversation) ? (
+                  <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+                    <Link href={profileHref(activeConversation) ?? "#"}>View Profile</Link>
+                  </Button>
                 ) : null}
               </div>
-            );
-          })}
-          <div ref={bottomRef} />
-        </div>
+            </div>
 
-        <form onSubmit={onSendMessage} className="mt-4 space-y-3">
-          <Input
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder="Write your message"
-            maxLength={5000}
-            required
-          />
-          <Input
-            value={fileUrl}
-            onChange={(event) => setFileUrl(event.target.value)}
-            placeholder="Optional file URL"
-            type="url"
-          />
-          <Input type="file" onChange={onFilePicked} />
-          <Button type="submit" disabled={sending || !content.trim()}>
-            {sending ? "Sending..." : "Send Message"}
-          </Button>
-        </form>
+            <div className="flex-1 space-y-3 overflow-y-auto p-4">
+              {loading ? <p className="text-sm text-[#4b4b4b]">Loading message history...</p> : null}
+
+              {!loading && sortedMessages.length === 0 ? (
+                <p className="text-sm text-[#4b4b4b]">No messages yet. Start the conversation.</p>
+              ) : null}
+
+              {sortedMessages.map((message) => {
+                const mine = user?.id === message.senderId;
+                return (
+                  <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[85%] rounded-2xl border px-3 py-2 shadow-sm ${
+                        mine
+                          ? "border-[#66a33f] bg-[#dcf8c6]"
+                          : "border-[#cfd7e5] bg-white"
+                      }`}
+                    >
+                      {!mine ? (
+                        <p className="mb-1 text-[11px] font-semibold text-[#1040c0]">
+                          {message.sender.name}
+                        </p>
+                      ) : null}
+
+                      <p className="whitespace-pre-wrap text-sm text-[#121212]">{message.content}</p>
+
+                      {message.fileUrl ? (
+                        <div className="mt-2 space-y-2">
+                          {isImageAttachment(message) ? (
+                            <a href={message.fileUrl} target="_blank" rel="noreferrer" className="block">
+                              <Image
+                                src={message.fileUrl}
+                                alt={message.attachment?.name ?? "attachment"}
+                                width={640}
+                                height={360}
+                                className="max-h-56 rounded-lg border border-[#121212] object-contain"
+                              />
+                            </a>
+                          ) : null}
+                          <a
+                            href={message.fileUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-block rounded-lg border border-[#121212] bg-[#f8f8f8] px-2 py-1 text-xs text-[#1040c0] underline"
+                          >
+                            {message.attachment?.name || "Open attachment"}
+                            {message.attachment?.size ? ` (${formatBytes(message.attachment.size)})` : ""}
+                          </a>
+                        </div>
+                      ) : null}
+
+                      <div className="mt-1 text-right text-[11px] text-[#4b4b4b]">
+                        {new Date(message.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div ref={bottomRef} />
+            </div>
+
+            <form onSubmit={onSendMessage} className="border-t border-[#121212] bg-white p-3">
+              <div className="flex items-end gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={onSelectFile}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-10 w-10 px-0"
+                  onClick={() => fileInputRef.current?.click()}
+                  aria-label="Attach file"
+                >
+                  +
+                </Button>
+                <Textarea
+                  rows={2}
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                  placeholder="Type a message"
+                  maxLength={5000}
+                />
+                <Button type="submit" className="h-10" disabled={sending || (!content.trim() && !attachment)}>
+                  {sending ? "Sending..." : "Send"}
+                </Button>
+              </div>
+
+              {attachment ? (
+                <div className="mt-2 flex items-center justify-between rounded-lg border border-[#121212] bg-[#f5f5f5] px-2 py-1 text-xs">
+                  <span>{attachment.name} ({formatBytes(attachment.size)})</span>
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => {
+                      setAttachment(null);
+                      if (fileInputRef.current) {
+                        fileInputRef.current.value = "";
+                      }
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : null}
+            </form>
+          </div>
+        </div>
       </Card>
     </section>
   );

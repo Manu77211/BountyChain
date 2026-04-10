@@ -15,6 +15,9 @@ export function getPageTitle(pathname: string) {
   if (pathname.startsWith("/dashboard/projects")) {
     return "Applications";
   }
+  if (pathname.startsWith("/dashboard/chat")) {
+    return "Conversations";
+  }
   if (pathname.startsWith("/dashboard/bounties")) {
     return "Bounties";
   }

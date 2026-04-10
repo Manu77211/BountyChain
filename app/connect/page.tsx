@@ -5,6 +5,8 @@ import { useMemo } from "react";
 import { CheckCircle2, Loader2, ShieldCheck, Wallet, Zap, PlugZap, AlertTriangle } from "lucide-react";
 import { useWallet } from "../../src/hooks/useWallet";
 
+export const dynamic = "force-dynamic";
+
 function isAlgoSignerInstalled() {
   if (typeof window === "undefined") {
     return false;

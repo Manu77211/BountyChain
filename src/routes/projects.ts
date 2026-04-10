@@ -5,7 +5,7 @@ import { dbQuery } from "../../lib/db/client";
 import type { UserRole } from "../../lib/db/types";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
-import { validateBody, validateParams } from "../middleware/validate";
+import { validateBody, validateParams, validateQuery } from "../middleware/validate";
 
 const router = Router();
 
@@ -55,6 +55,10 @@ const createMeetingSchema = z.object({
   scheduledFor: z.coerce.date(),
 });
 
+const projectMessagesQuerySchema = z.object({
+  applicationId: z.string().uuid().optional(),
+});
+
 type ProjectListRow = {
   id: string;
   title: string;
@@ -67,6 +71,8 @@ type ProjectListRow = {
   status: string;
   client_id: string;
   client_name: string;
+  client_wallet_address: string;
+  client_trust_score: number;
   freelancer_id: string | null;
   freelancer_name: string | null;
   application_count: number;
@@ -74,6 +80,7 @@ type ProjectListRow = {
   my_application_status: string | null;
   can_apply: boolean;
   milestones: Array<{ id: string; status: string; amount: number }> | null;
+  applicants_preview: Array<{ freelancer_name: string; status: string }> | null;
 };
 
 type ProjectDetailRow = {
@@ -88,6 +95,8 @@ type ProjectDetailRow = {
   status: string;
   creator_id: string;
   client_name: string;
+  client_wallet_address: string;
+  client_trust_score: number;
   freelancer_id: string | null;
   freelancer_name: string | null;
   draft_approved: boolean;
@@ -102,6 +111,7 @@ type ProjectDetailRow = {
     finalScore: number | null;
     decision: string;
   }> | null;
+  applicants_preview: Array<{ freelancer_name: string; status: string }> | null;
 };
 
 type ApplicantRow = {
@@ -119,9 +129,14 @@ type ApplicantRow = {
 type ProjectMessageRow = {
   id: string;
   bounty_id: string;
+  application_id: string | null;
+  scope: string;
   sender_id: string;
   content: string;
   file_url: string | null;
+  file_name: string | null;
+  file_size: number | null;
+  file_type: string | null;
   created_at: string;
   sender_name: string;
   sender_role: string;
@@ -158,6 +173,8 @@ function mapListRow(row: ProjectListRow) {
     client: {
       id: row.client_id,
       name: row.client_name,
+      walletAddress: row.client_wallet_address,
+      trustScore: row.client_trust_score,
     },
     freelancer: row.freelancer_id
       ? {
@@ -186,6 +203,7 @@ function mapListRow(row: ProjectListRow) {
     _count: {
       applications: Number(row.application_count ?? 0),
     },
+    applicantsPreview: row.applicants_preview ?? [],
   };
 }
 
@@ -211,9 +229,18 @@ function mapMessageRow(row: ProjectMessageRow) {
   return {
     id: row.id,
     projectId: row.bounty_id,
+    applicationId: row.application_id,
+    scope: String(row.scope).toUpperCase(),
     senderId: row.sender_id,
     content: row.content,
     fileUrl: row.file_url,
+    attachment: row.file_name || row.file_size !== null || row.file_type
+      ? {
+          name: row.file_name,
+          size: row.file_size,
+          type: row.file_type,
+        }
+      : null,
     createdAt: row.created_at,
     sender: {
       id: row.sender_id,
@@ -253,6 +280,36 @@ async function canAccessProject(userId: string, role: UserRole, projectId: strin
       LIMIT 1
     `,
     [projectId, userId],
+  );
+
+  return (access.rowCount ?? 0) > 0;
+}
+
+async function canAccessApplicationConversation(
+  userId: string,
+  role: UserRole,
+  projectId: string,
+  applicationId: string,
+) {
+  if (role === "admin") {
+    return true;
+  }
+
+  const access = await dbQuery<{ id: string }>(
+    `
+      SELECT pa.id
+      FROM project_applications pa
+      JOIN bounties b ON b.id = pa.bounty_id
+      WHERE pa.id = $1
+        AND pa.bounty_id = $2
+        AND b.deleted_at IS NULL
+        AND (
+          b.creator_id = $3
+          OR pa.freelancer_id = $3
+        )
+      LIMIT 1
+    `,
+    [applicationId, projectId, userId],
   );
 
   return (access.rowCount ?? 0) > 0;
@@ -314,6 +371,8 @@ function projectSelectSql() {
            b.status,
            c.id AS client_id,
            COALESCE(NULLIF(c.display_name, ''), NULLIF(c.email, ''), c.wallet_address) AS client_name,
+           c.wallet_address AS client_wallet_address,
+           c.reputation_score AS client_trust_score,
            f.id AS freelancer_id,
            COALESCE(NULLIF(f.display_name, ''), NULLIF(f.email, ''), f.wallet_address) AS freelancer_name,
            COALESCE(app_count.application_count, 0) AS application_count,
@@ -327,7 +386,8 @@ function projectSelectSql() {
              THEN TRUE
              ELSE FALSE
            END AS can_apply,
-           COALESCE(ms.milestones, '[]'::json) AS milestones
+           COALESCE(ms.milestones, '[]'::json) AS milestones,
+           COALESCE(ap.applicants_preview, '[]'::json) AS applicants_preview
     FROM bounties b
     JOIN users c ON c.id = b.creator_id
     LEFT JOIN LATERAL (
@@ -367,6 +427,18 @@ function projectSelectSql() {
       FROM milestones m
       WHERE m.bounty_id = b.id
     ) ms ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT json_agg(
+        json_build_object(
+          'freelancer_name', COALESCE(NULLIF(u.display_name, ''), NULLIF(u.email, ''), u.wallet_address),
+          'status', pa.status
+        )
+        ORDER BY pa.updated_at DESC
+      ) AS applicants_preview
+      FROM project_applications pa
+      JOIN users u ON u.id = pa.freelancer_id
+      WHERE pa.bounty_id = b.id
+    ) ap ON TRUE
   `;
 }
 
@@ -521,6 +593,194 @@ router.get("/my-applications", requireAuth, async (request, response, next) => {
   }
 });
 
+router.get("/conversations", requireAuth, async (request, response, next) => {
+  try {
+    const user = requireUser(request);
+
+    const rows = await dbQuery<{
+      project_id: string;
+      application_id: string | null;
+      scope: string;
+      title: string;
+      counterpart_name: string | null;
+      counterpart_id: string | null;
+      counterpart_role: string | null;
+      conversation_status: string;
+      updated_at: string;
+      message_id: string | null;
+      message_content: string | null;
+      message_file_url: string | null;
+      message_created_at: string | null;
+      message_sender_id: string | null;
+      message_sender_name: string | null;
+    }>(
+      `
+        WITH accessible AS (
+          SELECT b.id AS project_id,
+                 NULL::uuid AS application_id,
+                 'bounty'::text AS scope,
+                 b.title,
+                 CASE
+                   WHEN $1 IN ('client', 'admin')
+                     THEN COALESCE(NULLIF(f_selected.display_name, ''), NULLIF(f_selected.email, ''), f_selected.wallet_address)
+                   ELSE COALESCE(NULLIF(c.display_name, ''), NULLIF(c.email, ''), c.wallet_address)
+                 END AS counterpart_name,
+                 CASE
+                   WHEN $1 IN ('client', 'admin')
+                     THEN f_selected.id
+                   ELSE c.id
+                 END AS counterpart_id,
+                 CASE
+                   WHEN $1 IN ('client', 'admin')
+                     THEN CASE WHEN f_selected.id IS NULL THEN NULL ELSE 'freelancer' END
+                   ELSE 'client'
+                 END AS counterpart_role,
+                 b.status::text AS conversation_status,
+                 b.updated_at::text AS updated_at
+          FROM bounties b
+          JOIN users c ON c.id = b.creator_id
+          LEFT JOIN LATERAL (
+            SELECT pa.freelancer_id
+            FROM project_applications pa
+            WHERE pa.bounty_id = b.id
+              AND pa.status = 'selected'
+            ORDER BY pa.updated_at DESC
+            LIMIT 1
+          ) selected ON TRUE
+          LEFT JOIN users f_selected ON f_selected.id = selected.freelancer_id
+          WHERE b.deleted_at IS NULL
+            AND (
+              ($1 = 'admin')
+              OR ($1 = 'client' AND b.creator_id = $2)
+              OR (
+                $1 = 'freelancer'
+                AND (
+                  EXISTS (
+                    SELECT 1
+                    FROM submissions s
+                    WHERE s.bounty_id = b.id
+                      AND s.freelancer_id = $2
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM project_applications pa
+                    WHERE pa.bounty_id = b.id
+                      AND pa.freelancer_id = $2
+                      AND pa.status = 'selected'
+                  )
+                )
+              )
+            )
+
+          UNION ALL
+
+          SELECT b.id AS project_id,
+                 pa.id AS application_id,
+                 'application'::text AS scope,
+                 b.title,
+                 CASE
+                   WHEN $1 IN ('client', 'admin')
+                     THEN COALESCE(NULLIF(f.display_name, ''), NULLIF(f.email, ''), f.wallet_address)
+                   ELSE COALESCE(NULLIF(c.display_name, ''), NULLIF(c.email, ''), c.wallet_address)
+                 END AS counterpart_name,
+                 CASE
+                   WHEN $1 IN ('client', 'admin')
+                     THEN f.id
+                   ELSE c.id
+                 END AS counterpart_id,
+                 CASE
+                   WHEN $1 IN ('client', 'admin')
+                     THEN 'freelancer'
+                   ELSE 'client'
+                 END AS counterpart_role,
+                 pa.status::text AS conversation_status,
+                 pa.updated_at::text AS updated_at
+          FROM project_applications pa
+          JOIN bounties b ON b.id = pa.bounty_id
+          JOIN users f ON f.id = pa.freelancer_id
+          JOIN users c ON c.id = b.creator_id
+          WHERE b.deleted_at IS NULL
+            AND (
+              $1 = 'admin'
+              OR ($1 = 'client' AND b.creator_id = $2)
+              OR ($1 = 'freelancer' AND pa.freelancer_id = $2)
+            )
+        ),
+        latest_message AS (
+          SELECT DISTINCT ON (bm.bounty_id, bm.scope, COALESCE(bm.application_id, '00000000-0000-0000-0000-000000000000'::uuid))
+                 bm.bounty_id,
+                 bm.scope,
+                 bm.application_id,
+                 bm.id AS message_id,
+                 bm.content AS message_content,
+                 bm.file_url AS message_file_url,
+                 bm.created_at::text AS message_created_at,
+                 bm.sender_id AS message_sender_id,
+                 COALESCE(NULLIF(u.display_name, ''), NULLIF(u.email, ''), u.wallet_address) AS message_sender_name
+          FROM bounty_messages bm
+          JOIN users u ON u.id = bm.sender_id
+          ORDER BY bm.bounty_id,
+                   bm.scope,
+                   COALESCE(bm.application_id, '00000000-0000-0000-0000-000000000000'::uuid),
+                   bm.created_at DESC
+        )
+        SELECT a.project_id,
+               a.application_id,
+               a.scope,
+               a.title,
+               a.counterpart_name,
+               a.counterpart_id,
+               a.counterpart_role,
+               a.conversation_status,
+               COALESCE(lm.message_created_at, a.updated_at) AS updated_at,
+               lm.message_id,
+               lm.message_content,
+               lm.message_file_url,
+               lm.message_created_at,
+               lm.message_sender_id,
+               lm.message_sender_name
+        FROM accessible a
+        LEFT JOIN latest_message lm
+          ON lm.bounty_id = a.project_id
+         AND lm.scope = a.scope
+         AND (
+           (a.application_id IS NULL AND lm.application_id IS NULL)
+           OR a.application_id = lm.application_id
+         )
+        ORDER BY COALESCE(lm.message_created_at, a.updated_at) DESC
+      `,
+      [user.role, user.userId],
+    );
+
+    return response.status(200).json(
+      rows.rows.map((row) => ({
+        id: row.application_id ? `application:${row.application_id}` : `bounty:${row.project_id}`,
+        projectId: row.project_id,
+        applicationId: row.application_id,
+        scope: String(row.scope).toUpperCase(),
+        title: row.title,
+        counterpartName: row.counterpart_name,
+        counterpartId: row.counterpart_id,
+        counterpartRole: row.counterpart_role ? String(row.counterpart_role).toUpperCase() : null,
+        status: String(row.conversation_status).toUpperCase(),
+        updatedAt: row.updated_at,
+        lastMessage: row.message_id
+          ? {
+              id: row.message_id,
+              content: row.message_content,
+              fileUrl: row.message_file_url,
+              createdAt: row.message_created_at,
+              senderId: row.message_sender_id,
+              senderName: row.message_sender_name,
+            }
+          : null,
+      })),
+    );
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.post("/", requireAuth, validateBody(createProjectSchema), async (request, response, next) => {
   try {
     const user = requireUser(request);
@@ -611,12 +871,21 @@ router.post("/", requireAuth, validateBody(createProjectSchema), async (request,
   }
 });
 
-router.get("/:id/messages", requireAuth, validateParams(projectIdParamsSchema), async (request, response, next) => {
+router.get(
+  "/:id/messages",
+  requireAuth,
+  validateParams(projectIdParamsSchema),
+  validateQuery(projectMessagesQuerySchema),
+  async (request, response, next) => {
   try {
     const user = requireUser(request);
     const projectId = request.params.id;
+    const query = request.query as unknown as { applicationId?: string };
+    const applicationId = query.applicationId?.trim();
 
-    const allowed = await canAccessProject(user.userId, user.role, projectId);
+    const allowed = applicationId
+      ? await canAccessApplicationConversation(user.userId, user.role, projectId, applicationId)
+      : await canAccessProject(user.userId, user.role, projectId);
     if (!allowed) {
       throw new AppError(403, 403, "Forbidden");
     }
@@ -625,26 +894,37 @@ router.get("/:id/messages", requireAuth, validateParams(projectIdParamsSchema), 
       `
         SELECT bm.id,
                bm.bounty_id,
+               bm.application_id,
+               bm.scope,
                bm.sender_id,
                bm.content,
                bm.file_url,
+               bm.file_name,
+               bm.file_size,
+               bm.file_type,
                bm.created_at::text,
                COALESCE(NULLIF(u.display_name, ''), NULLIF(u.email, ''), u.wallet_address) AS sender_name,
                u.role::text AS sender_role
         FROM bounty_messages bm
         JOIN users u ON u.id = bm.sender_id
         WHERE bm.bounty_id = $1
+          AND bm.scope = $2
+          AND (
+            ($3::uuid IS NULL AND bm.application_id IS NULL)
+            OR bm.application_id = $3::uuid
+          )
         ORDER BY bm.created_at ASC
         LIMIT 500
       `,
-      [projectId],
+      [projectId, applicationId ? "application" : "bounty", applicationId ?? null],
     );
 
     return response.status(200).json(messages.rows.map((row) => mapMessageRow(row)));
   } catch (error) {
     return next(error);
   }
-});
+},
+);
 
 router.post(
   "/:id/apply",
@@ -1132,6 +1412,8 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                b.status,
                b.creator_id,
                COALESCE(NULLIF(c.display_name, ''), NULLIF(c.email, ''), c.wallet_address) AS client_name,
+               c.wallet_address AS client_wallet_address,
+               c.reputation_score AS client_trust_score,
                f.id AS freelancer_id,
                COALESCE(NULLIF(f.display_name, ''), NULLIF(f.email, ''), f.wallet_address) AS freelancer_name,
                b.status <> 'draft' AS draft_approved,
@@ -1140,7 +1422,8 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                ls.status AS latest_submission_status,
                ls.github_pr_url AS latest_submission_file_url,
                ls.client_rating_stars AS latest_submission_client_rating,
-               COALESCE(vr.validation_reports, '[]'::json) AS validation_reports
+               COALESCE(vr.validation_reports, '[]'::json) AS validation_reports,
+               COALESCE(ap.applicants_preview, '[]'::json) AS applicants_preview
         FROM bounties b
         JOIN users c ON c.id = b.creator_id
         LEFT JOIN LATERAL (
@@ -1196,6 +1479,18 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
           FROM submissions s
           WHERE s.bounty_id = b.id
         ) vr ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT json_agg(
+            json_build_object(
+              'freelancer_name', COALESCE(NULLIF(u.display_name, ''), NULLIF(u.email, ''), u.wallet_address),
+              'status', pa.status
+            )
+            ORDER BY pa.updated_at DESC
+          ) AS applicants_preview
+          FROM project_applications pa
+          JOIN users u ON u.id = pa.freelancer_id
+          WHERE pa.bounty_id = b.id
+        ) ap ON TRUE
         WHERE b.id = $1
           AND b.deleted_at IS NULL
         LIMIT 1
@@ -1207,7 +1502,7 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
       throw new AppError(404, 404, "Bounty not found");
     }
 
-    if (user.role === "client" && detail.rows[0].creator_id !== user.userId && user.role !== "admin") {
+    if (user.role === "client" && detail.rows[0].creator_id !== user.userId) {
       throw new AppError(403, 403, "Forbidden");
     }
 
@@ -1229,6 +1524,8 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
       client: {
         id: row.creator_id,
         name: row.client_name,
+        walletAddress: row.client_wallet_address,
+        trustScore: row.client_trust_score,
       },
       freelancer: row.freelancer_id
         ? {
@@ -1250,6 +1547,7 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
           : [],
       })),
       validationReports: row.validation_reports ?? [],
+      applicantsPreview: row.applicants_preview ?? [],
     });
   } catch (error) {
     return next(error);

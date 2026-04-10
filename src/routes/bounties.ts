@@ -15,6 +15,7 @@ import {
   extendDeadlineSchema,
   fundBountyParamsSchema,
   idParamSchema,
+  raiseBountyAmountSchema,
 } from "../schemas/bounty.schema";
 import { emitToBounty, emitToUser } from "../realtime/socket";
 import { AlgorandService } from "../services/algorand";
@@ -640,6 +641,66 @@ router.patch(
       });
 
       return response.status(200).json({ bounty: updated.rows[0] });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.patch(
+  "/:id/raise-amount",
+  requireAuth,
+  sanctionsMiddleware("bounties.raise_amount"),
+  validateParams(idParamSchema),
+  validateBody(raiseBountyAmountSchema),
+  async (request, response, next) => {
+    try {
+      if (!request.user) {
+        throw new AppError(401, 401, "Unauthorized");
+      }
+
+      const bounty = await getBountyById(request.params.id);
+      if (!bounty) {
+        throw new AppError(404, 404, "Bounty not found");
+      }
+
+      assertBountyIsActionable(bounty, "raise_amount");
+      if (bounty.creator_id !== request.user.userId || request.user.role !== "client") {
+        throw new AppError(403, 403, "Only the bounty creator can raise amount");
+      }
+
+      const allowedStatuses = new Set(["draft", "open", "in_progress", "pending_escrow"]);
+      if (!allowedStatuses.has(bounty.status)) {
+        throw new AppError(409, 409, "Amount can only be raised for active bounties");
+      }
+
+      const nextAmount = request.body.new_total_amount as bigint;
+      const currentAmount = BigInt(bounty.total_amount);
+      if (nextAmount <= currentAmount) {
+        throw new AppError(400, 400, "new_total_amount must be greater than current total_amount");
+      }
+
+      const delta = nextAmount - currentAmount;
+      if (bounty.escrow_locked) {
+        await algorand.assertWalletHasEscrowBalance(request.user.walletAddress, delta, 2_000n);
+      }
+
+      const updated = await dbQuery<BountyRow>(
+        `
+          UPDATE bounties
+          SET total_amount = $1,
+              updated_at = NOW()
+          WHERE id = $2
+            AND deleted_at IS NULL
+          RETURNING ${BOUNTY_SELECT_COLUMNS}
+        `,
+        [nextAmount.toString(), bounty.id],
+      );
+
+      return response.status(200).json({
+        bounty: updated.rows[0],
+        delta_amount: delta.toString(),
+      });
     } catch (error) {
       return next(error);
     }

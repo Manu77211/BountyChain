@@ -2,12 +2,16 @@ import { Router } from "express";
 import { z } from "zod";
 import { dbQuery } from "../../lib/db/client";
 import { requireAuth } from "../middleware/auth";
-import { validateBody, validateQuery } from "../middleware/validate";
+import { validateBody, validateParams, validateQuery } from "../middleware/validate";
 
 const router = Router();
 
 const updateProfileSchema = z.object({
   email: z.string().email().optional(),
+});
+
+const userIdParamsSchema = z.object({
+  id: z.string().uuid("id must be a UUID"),
 });
 
 const activityQuerySchema = z.object({
@@ -567,6 +571,58 @@ router.patch("/me", requireAuth, validateBody(updateProfileSchema), async (reque
 
     const updated = await dbQuery(sql, [request.body.email ?? null, request.user.userId]);
     return response.status(200).json({ user: updated.rows[0] });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:id/public", requireAuth, validateParams(userIdParamsSchema), async (request, response, next) => {
+  try {
+    if (!request.user) {
+      return response.status(401).json({
+        error: "Unauthorized",
+        code: 401,
+        detail: "Login required",
+      });
+    }
+
+    const result = await dbQuery<{
+      id: string;
+      name: string;
+      role: string;
+      wallet_address: string | null;
+      reputation_score: number;
+      created_at: string;
+    }>(
+      `
+        SELECT u.id,
+               COALESCE(NULLIF(u.display_name, ''), NULLIF(u.email, ''), u.wallet_address) AS name,
+               u.role::text AS role,
+               u.wallet_address,
+               u.reputation_score,
+               u.created_at::text AS created_at
+        FROM users u
+        WHERE u.id = $1
+          AND u.deleted_at IS NULL
+        LIMIT 1
+      `,
+      [request.params.id],
+    );
+
+    if ((result.rowCount ?? 0) === 0) {
+      return response.status(404).json({
+        error: "Not found",
+        code: 404,
+        detail: "User not found",
+      });
+    }
+
+    return response.status(200).json({
+      user: {
+        ...result.rows[0],
+        role: String(result.rows[0].role).toUpperCase(),
+      },
+    });
   } catch (error) {
     return next(error);
   }

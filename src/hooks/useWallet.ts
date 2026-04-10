@@ -10,6 +10,16 @@ type Network = "mainnet" | "testnet" | "unknown";
 
 type WalletState = "idle" | "connecting" | "signing" | "success" | "error";
 
+type AlgoSignerAccount = {
+  address: string;
+};
+
+type AlgoSignerClient = {
+  connect: () => Promise<void>;
+  accounts: (input: { ledger: "MainNet" | "TestNet" }) => Promise<AlgoSignerAccount[]>;
+  signBytes: (message: string, address: string) => Promise<{ signature?: string }>;
+};
+
 function normalizeNetwork(value?: string): Network {
   const normalized = String(value ?? "").toLowerCase();
   if (normalized.includes("mainnet")) {
@@ -42,7 +52,7 @@ function mapWalletError(error: unknown) {
 }
 
 async function connectAlgoSignerWallet() {
-  const algoSigner = (window as unknown as { AlgoSigner?: any }).AlgoSigner;
+  const algoSigner = (window as unknown as { AlgoSigner?: AlgoSignerClient }).AlgoSigner;
   if (!algoSigner) {
     throw new Error("AlgoSigner is not installed. Install Extension.");
   }

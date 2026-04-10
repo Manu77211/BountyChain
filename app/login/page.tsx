@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "../../store/auth-store";
 import { AuthShell } from "../../components/ui/auth-shell";
@@ -18,7 +18,7 @@ function resolveRedirectTarget(redirectParam: string | null, role?: string) {
   return resolveDashboardRoute(role);
 }
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { login, loginWithPera, loading, error, token, user, hydrate } = useAuthStore();
@@ -106,5 +106,32 @@ export default function LoginPage() {
         </p>
       </Card>
     </AuthShell>
+  );
+}
+
+function LoginFallback() {
+  return (
+    <AuthShell
+      title="Login"
+      subtitle="Access your BountyEscrow AI workspace and continue escrow-backed bounty execution."
+      sideNote={
+        <div className="space-y-3">
+          <p>Secure, role-based access for clients and freelancers with validation-gated escrow collaboration.</p>
+          <p>Use email login for standard sessions or Pera Wallet login for Algorand-native identity.</p>
+        </div>
+      }
+    >
+      <Card className="h-full border-[#121212] bg-[#fff9e8] p-7 shadow-[8px_8px_0_#121212]">
+        <p className="text-sm text-[#4b4b4b]">Loading login...</p>
+      </Card>
+    </AuthShell>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginContent />
+    </Suspense>
   );
 }

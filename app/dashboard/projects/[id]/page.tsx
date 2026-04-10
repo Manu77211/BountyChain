@@ -2,20 +2,23 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   approveProjectDraftRequest,
   assignFreelancerRequest,
   createProjectMeetingRequest,
   createMilestoneSubmissionRequest,
+  deleteProjectRequest,
   getProjectRequest,
   listProjectMeetingsRequest,
   listProjectApplicantsRequest,
   listFreelancersRequest,
+  raiseBountyAmountRequest,
   requestSubmissionChangesRequest,
   rateSubmissionRequest,
   selectProjectApplicantRequest,
 } from "../../../../lib/api";
+import { formatAlgoWithMicro, fromMicroAlgo, toMicroAlgo } from "../../../../lib/algo";
 import { canReleaseEscrow, hasDistinctParticipants } from "../../../../lib/project-config";
 import { useAuthStore } from "../../../../store/auth-store";
 import { Button, Card, Input, PageIntro, Pill, ProgressBar, Select, Textarea } from "../../../../components/ui/primitives";
@@ -112,6 +115,7 @@ type ProjectDetailView = {
 
 export default function DashboardProjectDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const projectId = params.id;
   const { token, user, hydrate } = useAuthStore();
 
@@ -129,6 +133,9 @@ export default function DashboardProjectDetailPage() {
   const [meetings, setMeetings] = useState<ProjectMeeting[]>([]);
   const [meetingTitle, setMeetingTitle] = useState("Weekly Sync");
   const [meetingAgenda, setMeetingAgenda] = useState("");
+  const [raiseAmountAlgo, setRaiseAmountAlgo] = useState("");
+  const [raisingAmount, setRaisingAmount] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [meetingTime, setMeetingTime] = useState(() => {
     const base = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const local = new Date(base.getTime() - base.getTimezoneOffset() * 60_000);
@@ -150,6 +157,7 @@ export default function DashboardProjectDetailPage() {
     try {
       const data = (await getProjectRequest(token, projectId)) as ProjectDetailView;
       setProject(data);
+      setRaiseAmountAlgo(fromMicroAlgo(data.criteria?.totalAmountMicroAlgo).toFixed(2));
 
       try {
         const meetingList = (await listProjectMeetingsRequest(token, projectId)) as ProjectMeeting[];
@@ -353,6 +361,57 @@ export default function DashboardProjectDetailPage() {
     }
   }
 
+  async function onRaiseAmount() {
+    if (!token || !projectId || user?.role !== "CLIENT") {
+      return;
+    }
+
+    const parsed = Number(raiseAmountAlgo);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setError("Enter a valid ALGO amount.");
+      return;
+    }
+
+    setRaisingAmount(true);
+    setSaving(true);
+    setError(null);
+    try {
+      await raiseBountyAmountRequest(token, projectId, String(toMicroAlgo(parsed)));
+      await loadProject();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRaisingAmount(false);
+      setSaving(false);
+    }
+  }
+
+  async function onDeleteProject() {
+    if (!token || !projectId || user?.role !== "CLIENT") {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Delete this bounty? This action will cancel and remove it from active views.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingProject(true);
+    setSaving(true);
+    setError(null);
+    try {
+      await deleteProjectRequest(token, projectId);
+      router.push("/dashboard/projects");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeletingProject(false);
+      setSaving(false);
+    }
+  }
+
   async function onRequestChanges(submissionId: string) {
     if (!token) {
       return;
@@ -465,10 +524,45 @@ export default function DashboardProjectDetailPage() {
           </div>
           <div className="rounded-lg border border-[#121212] bg-[#f5f5f5] p-3 text-xs text-[#4b4b4b]">
             <p className="font-semibold text-[#121212]">Project Criteria</p>
-            <p className="mt-1">Budget {project.criteria?.totalAmountMicroAlgo ?? 0} microALGO</p>
+            <p className="mt-1">Budget {formatAlgoWithMicro(project.criteria?.totalAmountMicroAlgo, 2)}</p>
             <p className="mt-1">Deadline {project.criteria?.deadline ? new Date(project.criteria.deadline).toLocaleString() : "Not set"}</p>
             {(project.criteria?.requiredSkills ?? []).length ? (
               <p className="mt-1">Skills {(project.criteria?.requiredSkills ?? []).join(", ")}</p>
+            ) : null}
+
+            {user?.role === "CLIENT" ? (
+              <div className="mt-3 space-y-2 border border-[#121212] bg-white p-2">
+                <p className="text-[11px] font-semibold text-[#121212]">Raise Bounty Amount</p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={0.1}
+                    step={0.1}
+                    value={raiseAmountAlgo}
+                    onChange={(event) => setRaiseAmountAlgo(event.target.value)}
+                  />
+                  <span className="text-[11px] font-semibold">ALGO</span>
+                </div>
+                <p className="text-[11px]">1 ALGO = 1,000,000 microALGO</p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-8 px-3 text-xs"
+                  onClick={() => void onRaiseAmount()}
+                  disabled={saving || raisingAmount}
+                >
+                  {raisingAmount ? "Updating..." : "Raise Amount"}
+                </Button>
+
+                <Button
+                  type="button"
+                  className="h-8 px-3 text-xs"
+                  onClick={() => void onDeleteProject()}
+                  disabled={saving || deletingProject}
+                >
+                  {deletingProject ? "Deleting..." : "Delete Bounty"}
+                </Button>
+              </div>
             ) : null}
           </div>
         </div>
@@ -494,16 +588,21 @@ export default function DashboardProjectDetailPage() {
                       <p className="mt-1 text-xs text-[#5b5b5b]">&quot;{application.message}&quot;</p>
                     ) : null}
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-[#5b5b5b]">
-                      {application.proposedAmount ? <span>Budget ${Number(application.proposedAmount).toFixed(2)}</span> : null}
+                      {application.proposedAmount ? <span>Budget {formatAlgoWithMicro(application.proposedAmount, 2)}</span> : null}
                       {application.estimatedDays ? <span>Timeline {application.estimatedDays} days</span> : null}
                     </div>
                     {application.deliverables ? (
                       <p className="mt-1 text-xs text-[#5b5b5b]">Deliverables: {application.deliverables}</p>
                     ) : null}
                   </div>
-                  <Button onClick={() => void onSelectApplicant(application.id)} disabled={saving || Boolean(project.freelancer)}>
-                    {saving ? "Selecting..." : "Select Applicant"}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button asChild variant="secondary" className="h-8 px-3 text-xs">
+                      <Link href={`/dashboard/chat/${project.id}?applicationId=${application.id}`}>Chat Applicant</Link>
+                    </Button>
+                    <Button onClick={() => void onSelectApplicant(application.id)} disabled={saving || Boolean(project.freelancer)}>
+                      {saving ? "Selecting..." : "Select Applicant"}
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -589,7 +688,7 @@ export default function DashboardProjectDetailPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="font-medium">{milestone.title}</p>
-                  <p className="text-sm text-[#4b4b4b]">${Number(milestone.amount ?? 0).toFixed(2)}</p>
+                  <p className="text-sm text-[#4b4b4b]">{formatAlgoWithMicro(milestone.amount, 2)}</p>
                 </div>
                 <Pill text={milestone.status} />
               </div>

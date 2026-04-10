@@ -20,12 +20,20 @@ export default function ForClientsPage() {
           ))}
         </div>
         <div className="mx-auto mt-8 max-w-7xl px-5 md:px-12">
-          <Link
-            href="/register?role=CLIENT"
-            className="inline-flex border-2 border-[#121212] bg-[#1040c0] px-6 py-3 text-sm font-black uppercase tracking-wide text-white shadow-[4px_4px_0_#121212]"
-          >
-            Register as Client
-          </Link>
+          <div className="flex flex-wrap gap-3">
+            <Link
+              href="/register?role=CLIENT"
+              className="inline-flex border-2 border-[#121212] bg-[#1040c0] px-6 py-3 text-sm font-black uppercase tracking-wide text-white shadow-[4px_4px_0_#121212]"
+            >
+              Register as Client
+            </Link>
+            <Link
+              href="/marketplace"
+              className="inline-flex border-2 border-[#121212] bg-white px-6 py-3 text-sm font-black uppercase tracking-wide text-[#121212] shadow-[4px_4px_0_#121212]"
+            >
+              Open Global Marketplace
+            </Link>
+          </div>
         </div>
       </section>
     </MarketingPageShell>

@@ -18,8 +18,9 @@ export function MarketingNav() {
   const navItems = useMemo(
     () => [
       { href: "/features", label: "Features" },
+      { href: "/marketplace", label: "Marketplace" },
       { href: "/for-clients", label: "For Clients" },
-      { href: "/for-freelancers", label: "For Freelancers" },
+      { href: "/for-freelancers", label: "Bounties" },
       { href: "/pricing", label: "Pricing" },
       { href: "/faq", label: "FAQ" },
     ],

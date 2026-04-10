@@ -73,6 +73,8 @@ type PayoutRow = {
 
 type WalletProvider = "pera" | "walletconnect" | "algosigner";
 
+const PROFILE_NOTIFICATION_PREFS_KEY = "bountyescrow.profile.notification-preferences.v1";
+
 function reputationTier(score: number) {
   if (score >= 81) {
     return "Elite";
@@ -130,6 +132,46 @@ export default function ProfilePage() {
   const [selectedProvider, setSelectedProvider] = useState<WalletProvider>("pera");
   const [network, setNetwork] = useState(process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet");
   const [walletMessage, setWalletMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const stored = window.localStorage.getItem(PROFILE_NOTIFICATION_PREFS_KEY);
+      if (!stored) {
+        return;
+      }
+
+      const parsed = JSON.parse(stored) as {
+        notifyDisputes?: boolean;
+        notifyPayouts?: boolean;
+        notifyBounties?: boolean;
+      };
+
+      setNotifyDisputes(Boolean(parsed.notifyDisputes));
+      setNotifyPayouts(Boolean(parsed.notifyPayouts));
+      setNotifyBounties(Boolean(parsed.notifyBounties));
+    } catch {
+      window.localStorage.removeItem(PROFILE_NOTIFICATION_PREFS_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      PROFILE_NOTIFICATION_PREFS_KEY,
+      JSON.stringify({
+        notifyDisputes,
+        notifyPayouts,
+        notifyBounties,
+      }),
+    );
+  }, [notifyBounties, notifyDisputes, notifyPayouts]);
 
   useEffect(() => {
     hydrate();

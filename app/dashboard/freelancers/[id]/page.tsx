@@ -36,7 +36,7 @@ type FreelancerDetail = {
 export default function FreelancerDetailPage() {
   const params = useParams<{ id: string }>();
   const freelancerId = params.id;
-  const { token, hydrate } = useAuthStore();
+  const { hydrate } = useAuthStore();
 
   const [freelancer, setFreelancer] = useState<FreelancerDetail | null>(null);
   const [loading, setLoading] = useState(true);
