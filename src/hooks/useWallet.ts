@@ -33,6 +33,12 @@ function normalizeNetwork(value?: string): Network {
 
 function mapWalletError(error: unknown) {
   const message = (error as Error)?.message ?? "Wallet connection failed";
+  if (message.toLowerCase().includes("chainid") && message.toLowerCase().includes("undefined")) {
+    return "AUTH-004: Wallet session corrupted. Please close wallet prompt and retry.";
+  }
+  if (message.toLowerCase().includes("session currently connected") || message.toLowerCase().includes("session_connect")) {
+    return "AUTH-004: Existing wallet session was stale. Please retry connect.";
+  }
   if (message.includes("AUTH-002")) {
     return "AUTH-002: Signature declined. Please approve in your wallet.";
   }

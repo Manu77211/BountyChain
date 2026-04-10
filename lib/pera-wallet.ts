@@ -2,7 +2,104 @@
 
 import { PeraWalletConnect } from "@perawallet/connect";
 
-const peraWallet = new PeraWalletConnect();
+const MAINNET_CHAIN_ID = 416001;
+const TESTNET_CHAIN_ID = 416002;
+const ALL_NETWORKS_CHAIN_ID = 4160;
+
+function normalizeNetwork(value?: string) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized.includes("mainnet")) {
+    return "mainnet";
+  }
+  if (normalized.includes("testnet")) {
+    return "testnet";
+  }
+  return "unknown";
+}
+
+function resolvePeraChainId() {
+  const network = normalizeNetwork(process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet");
+  if (network === "mainnet") {
+    return MAINNET_CHAIN_ID;
+  }
+  if (network === "testnet") {
+    return TESTNET_CHAIN_ID;
+  }
+  return ALL_NETWORKS_CHAIN_ID;
+}
+
+function createPeraWalletConnector() {
+  return new PeraWalletConnect({
+    chainId: resolvePeraChainId(),
+  });
+}
+
+let peraWallet = createPeraWalletConnector();
+
+function clearPeraSessionStorage() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem("walletconnect");
+    window.localStorage.removeItem("PeraWallet.Wallet");
+  } catch {
+    // Ignore localStorage access errors in restricted browser contexts.
+  }
+}
+
+function toErrorText(error: unknown) {
+  if (error instanceof Error) {
+    const detail = (error as Error & { data?: unknown }).data;
+    return `${error.message} ${detail ? JSON.stringify(detail) : ""}`.trim();
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return JSON.stringify(error);
+}
+
+function isRecoverableChainIdError(error: unknown) {
+  const text = toErrorText(error).toLowerCase();
+  return text.includes("chainid") && text.includes("undefined");
+}
+
+function isRecoverableSessionError(error: unknown) {
+  const text = toErrorText(error).toLowerCase();
+  return text.includes("session currently connected") || text.includes("session_connect");
+}
+
+function isRecoverableConnectError(error: unknown) {
+  return isRecoverableChainIdError(error) || isRecoverableSessionError(error);
+}
+
+function toUserFacingConnectError(error: unknown) {
+  const text = toErrorText(error);
+  if (isRecoverableChainIdError(error) || isRecoverableSessionError(error)) {
+    return new Error("AUTH-004: Wallet session corrupted. Please retry connect.");
+  }
+  return new Error(text || "Wallet connection failed");
+}
+
+async function resetPeraConnector() {
+  try {
+    await peraWallet.disconnect();
+  } catch {
+    // Ignore disconnect failures during forced reset.
+  }
+  clearPeraSessionStorage();
+  peraWallet = createPeraWalletConnector();
+}
+
+async function connectWithPera() {
+  const accounts = await peraWallet.connect();
+  const walletAddress = accounts[0];
+  if (!walletAddress) {
+    throw new Error("Pera wallet did not return an account");
+  }
+  return walletAddress;
+}
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
@@ -13,16 +110,29 @@ function bytesToBase64(bytes: Uint8Array) {
 }
 
 export async function connectPeraWallet() {
-  const accounts = await peraWallet.connect();
-  const walletAddress = accounts[0];
-  if (!walletAddress) {
-    throw new Error("Pera wallet did not return an account");
+  try {
+    return await connectWithPera();
+  } catch (error) {
+    if (!isRecoverableConnectError(error)) {
+      throw toUserFacingConnectError(error);
+    }
+
+    await resetPeraConnector();
+
+    try {
+      return await connectWithPera();
+    } catch (retryError) {
+      throw toUserFacingConnectError(retryError);
+    }
   }
-  return walletAddress;
 }
 
 export async function disconnectPeraWallet() {
-  await peraWallet.disconnect();
+  try {
+    await peraWallet.disconnect();
+  } finally {
+    await resetPeraConnector();
+  }
 }
 
 export async function signLoginMessageWithPera(walletAddress: string, message: string) {

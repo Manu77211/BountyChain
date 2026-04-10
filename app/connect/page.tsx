@@ -27,7 +27,10 @@ function ConnectContent() {
   const algoSignerInstalled = isAlgoSignerInstalled();
 
   const warning = useMemo(() => {
-    if (error?.includes("SC-C-006") || network === "testnet") {
+    const requiresMainnet = (process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet")
+      .toLowerCase()
+      .includes("mainnet");
+    if (requiresMainnet && (error?.includes("SC-C-006") || network === "testnet")) {
       return "Your wallet is on TestNet. Please switch to MainNet to continue.";
     }
     return null;
