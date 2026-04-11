@@ -8,7 +8,7 @@ import { listBountiesRequest, listMyBountiesRequest, meRequest, meStatsRequest }
 import { formatAlgo } from "../../lib/algo";
 import { useRealtimeChannel } from "../../lib/realtime-client";
 import { useAuthStore } from "../../store/auth-store";
-import { Button, Card, PageIntro, Pill, ProgressBar } from "../../components/ui/primitives";
+import { Button, Card, PageIntro, Pill, ProgressBar, Textarea } from "../../components/ui/primitives";
 
 type DashboardBounty = {
   id: string;
@@ -35,6 +35,8 @@ type DashboardStats = {
   reputation?: number;
 };
 
+const CLIENT_MNEMONIC_STORAGE_KEY = "bountychain.client.mnemonic.demo";
+
 function normalizeDashboardError(message: string) {
   const text = message.toLowerCase();
   if (text.includes("database unavailable") || text.includes("cannot reach api server")) {
@@ -51,6 +53,10 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mnemonicDraft, setMnemonicDraft] = useState("");
+  const [mnemonicNotice, setMnemonicNotice] = useState<string | null>(null);
+  const role = String(user?.role ?? profile?.user?.role ?? "").toLowerCase();
+  const isClient = role === "client";
 
   function onLogout() {
     logout();
@@ -60,6 +66,17 @@ export default function DashboardPage() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    if (!isClient) {
+      return;
+    }
+    const existingValue = window.sessionStorage.getItem(CLIENT_MNEMONIC_STORAGE_KEY);
+    if (existingValue) {
+      setMnemonicDraft(existingValue);
+      setMnemonicNotice("Loaded your demo mnemonic draft from this browser session.");
+    }
+  }, [isClient]);
 
   const loadDashboard = useCallback(async () => {
     if (!token) {
@@ -120,8 +137,17 @@ export default function DashboardPage() {
   const disputedBounties = Number(stats?.disputed_bounties ?? bounties.filter((item) => item.status === "disputed").length);
   const reputation = Number(stats?.reputation ?? profile?.user?.reputation_score ?? 0);
   const escrowTotal = Number(stats?.escrow_total ?? bounties.reduce((sum, item) => sum + Number(item.total_amount ?? "0"), 0));
-  const role = String(user?.role ?? profile?.user?.role ?? "").toLowerCase();
-  const isClient = role === "client";
+
+  function saveMnemonicDraft() {
+    window.sessionStorage.setItem(CLIENT_MNEMONIC_STORAGE_KEY, mnemonicDraft.trim());
+    setMnemonicNotice("Saved in this browser session only (demo mode).");
+  }
+
+  function clearMnemonicDraft() {
+    window.sessionStorage.removeItem(CLIENT_MNEMONIC_STORAGE_KEY);
+    setMnemonicDraft("");
+    setMnemonicNotice("Cleared session-stored mnemonic draft.");
+  }
 
   return (
     <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="space-y-6">
@@ -238,6 +264,28 @@ export default function DashboardPage() {
           </Button>
         </div>
       </Card>
+
+      {isClient ? (
+        <Card>
+          <h2 className="text-lg font-semibold">Client Demo Mnemonic</h2>
+          <p className="mt-1 text-sm text-[#4b4b4b]">
+            Demo-only local draft input for transaction scripts. This is not sent to the backend from this screen.
+          </p>
+          <div className="mt-4 space-y-3">
+            <Textarea
+              rows={3}
+              value={mnemonicDraft}
+              onChange={(event) => setMnemonicDraft(event.target.value)}
+              placeholder="Paste your 25-word demo mnemonic here"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={saveMnemonicDraft}>Save Draft</Button>
+              <Button type="button" variant="secondary" onClick={clearMnemonicDraft}>Clear Draft</Button>
+            </div>
+            {mnemonicNotice ? <p className="text-xs text-[#4b4b4b]">{mnemonicNotice}</p> : null}
+          </div>
+        </Card>
+      ) : null}
     </motion.section>
   );
 }

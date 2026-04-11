@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import {
   disconnectSessionRequest,
   getProfileSummaryRequest,
+  listPeraWalletTransactionsRequest,
   meRequest,
   meStatsRequest,
+  type PeraWalletTransaction,
   updateMeRequest,
 } from "../../lib/api";
 import { AppShell } from "../../src/components/layout/AppShell";
 import { Protected } from "../../components/protected";
-import { Button, Card, Input, PageIntro, Pill } from "../../components/ui/primitives";
+import { Button, Card, Input, PageIntro, Pill, Textarea } from "../../components/ui/primitives";
 import { useAuthStore } from "../../store/auth-store";
 
 type MeResponse = {
@@ -56,6 +58,8 @@ type ProfileStatsResponse = {
 type UpdateMeResponse = {
   user: MeResponse["user"];
 };
+
+const PROFILE_MNEMONIC_STORAGE_KEY = "bountychain.profile.mnemonic.demo";
 
 function reputationTier(score: number) {
   if (score >= 81) {
@@ -102,6 +106,24 @@ function isSessionExpiredError(detail: string) {
   );
 }
 
+function isAlgorandAddress(value: string) {
+  return /^[A-Z2-7]{58}$/.test(String(value).trim().toUpperCase());
+}
+
+function formatAlgoFromMicro(value: number) {
+  return (Number(value) / 1_000_000).toFixed(6);
+}
+
+function transactionRelativeParty(tx: PeraWalletTransaction) {
+  if (tx.direction === "in") {
+    return tx.sender || "unknown";
+  }
+  if (tx.direction === "out") {
+    return tx.receiver || "unknown";
+  }
+  return "self";
+}
+
 export default function ProfilePage() {
   const { token, logout, hydrate } = useAuthStore();
   const router = useRouter();
@@ -122,10 +144,23 @@ export default function ProfilePage() {
   const [pendingPayoutAlgo, setPendingPayoutAlgo] = useState(0);
   const [totalPaidOutAlgo, setTotalPaidOutAlgo] = useState(0);
   const [totalEarnedAlgo, setTotalEarnedAlgo] = useState(0);
+  const [mnemonicDraft, setMnemonicDraft] = useState("");
+  const [mnemonicNotice, setMnemonicNotice] = useState<string | null>(null);
+  const [txLoading, setTxLoading] = useState(false);
+  const [txError, setTxError] = useState<string | null>(null);
+  const [txRows, setTxRows] = useState<PeraWalletTransaction[]>([]);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    const existing = window.sessionStorage.getItem(PROFILE_MNEMONIC_STORAGE_KEY);
+    if (existing) {
+      setMnemonicDraft(existing);
+      setMnemonicNotice("Loaded mnemonic draft from this browser session.");
+    }
+  }, []);
 
   const refreshWalletBalance = useCallback(async () => {
     if (!token) {
@@ -242,6 +277,45 @@ export default function ProfilePage() {
 
   const role = String(profile?.user.role ?? "").toUpperCase();
   const tier = reputationTier(profile?.user.reputation_score ?? 0);
+  const activeWalletAddress = String(walletAddress || profile?.user.wallet_address || "").trim().toUpperCase();
+
+  const refreshPeraTransactions = useCallback(async () => {
+    if (!activeWalletAddress || !isAlgorandAddress(activeWalletAddress)) {
+      setTxRows([]);
+      setTxError(null);
+      return;
+    }
+
+    setTxLoading(true);
+    setTxError(null);
+    try {
+      if (!token) {
+        return;
+      }
+      const payload = await listPeraWalletTransactionsRequest(token, { limit: 12 });
+      setTxRows(payload.transactions);
+    } catch (requestError) {
+      setTxError((requestError as Error).message);
+      setTxRows([]);
+    } finally {
+      setTxLoading(false);
+    }
+  }, [activeWalletAddress, token]);
+
+  useEffect(() => {
+    void refreshPeraTransactions();
+  }, [refreshPeraTransactions]);
+
+  function saveMnemonicDraft() {
+    window.sessionStorage.setItem(PROFILE_MNEMONIC_STORAGE_KEY, mnemonicDraft.trim());
+    setMnemonicNotice("Saved in this browser session only. Not sent to backend.");
+  }
+
+  function clearMnemonicDraft() {
+    window.sessionStorage.removeItem(PROFILE_MNEMONIC_STORAGE_KEY);
+    setMnemonicDraft("");
+    setMnemonicNotice("Cleared session mnemonic draft.");
+  }
 
   const statCards = useMemo(() => {
     if (role === "CLIENT") {
@@ -343,6 +417,80 @@ export default function ProfilePage() {
                   {profile.user.is_banned ? <Pill text="banned" /> : null}
                   {profile.user.is_sanctions_flagged ? <Pill text="sanctions flagged" /> : null}
                 </div>
+              </Card>
+
+              <Card>
+                <h3 className="text-lg font-semibold">Mnemonic Key (Demo Draft)</h3>
+                <p className="mt-1 text-sm text-[#4b4b4b]">
+                  Use this for local demo workflows only. It is saved to session storage on this browser.
+                </p>
+                <div className="mt-4 space-y-3">
+                  <Textarea
+                    rows={3}
+                    value={mnemonicDraft}
+                    onChange={(event) => setMnemonicDraft(event.target.value)}
+                    placeholder="Paste your 25-word mnemonic for demo scripts"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" onClick={saveMnemonicDraft}>Save Mnemonic Draft</Button>
+                    <Button type="button" variant="secondary" onClick={clearMnemonicDraft}>Clear</Button>
+                  </div>
+                  {mnemonicNotice ? <p className="text-xs text-[#4b4b4b]">{mnemonicNotice}</p> : null}
+                </div>
+              </Card>
+
+              <Card>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-semibold">Pera Wallet Transactions</h3>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">
+                      Showing latest transactions for {maskWallet(activeWalletAddress || null)}.
+                    </p>
+                  </div>
+                  <Button type="button" variant="secondary" onClick={() => void refreshPeraTransactions()} disabled={txLoading}>
+                    {txLoading ? "Refreshing..." : "Refresh"}
+                  </Button>
+                </div>
+
+                {!activeWalletAddress || !isAlgorandAddress(activeWalletAddress) ? (
+                  <p className="mt-4 text-sm text-[#8f1515]">Enter and save a valid Algorand wallet address to view transactions.</p>
+                ) : null}
+
+                {txError ? <p className="mt-4 text-sm text-[#8f1515]">{txError}</p> : null}
+
+                {!txLoading && !txError && txRows.length === 0 && isAlgorandAddress(activeWalletAddress) ? (
+                  <p className="mt-4 text-sm text-[#4b4b4b]">No recent transactions found for this wallet.</p>
+                ) : null}
+
+                {txRows.length > 0 ? (
+                  <div className="mt-4 space-y-3">
+                    {txRows.map((tx) => (
+                      <div key={tx.id} className="rounded-xl border border-[#121212] bg-[#f5f5f5] p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-semibold uppercase">{tx.type}</p>
+                          <Pill text={tx.direction} />
+                        </div>
+                        <p className="mt-1 text-sm text-[#4b4b4b]">
+                          Amount: {formatAlgoFromMicro(tx.amount_micro_algo)} ALGO | Fee: {formatAlgoFromMicro(tx.fee_micro_algo)} ALGO
+                        </p>
+                        <p className="mt-1 text-xs text-[#4b4b4b]">
+                          Counterparty: {maskWallet(transactionRelativeParty(tx))}
+                        </p>
+                        <p className="mt-1 text-xs text-[#4b4b4b]">
+                          Confirmed Round: {tx.confirmed_round || "-"} | Time: {tx.round_time_unix ? new Date(tx.round_time_unix * 1000).toLocaleString() : "-"}
+                        </p>
+                        <a
+                          className="mt-2 inline-block text-xs font-semibold text-[#1040c0] underline"
+                          href={tx.explorer_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open on AlgoExplorer
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </Card>
 
               <div className="grid gap-3 md:grid-cols-4">

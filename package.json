@@ -16,6 +16,7 @@
     "db:delete-user": "tsx scripts/delete-user.ts",
     "db:check": "tsx scripts/check-consistency.ts",
     "testnet:tx:demo": "tsx scripts/testnet-demo-transfer.ts",
+    "inngest:deni:events": "tsx scripts/inngest-deni-events.ts",
     "api:test:critical": "tsx scripts/api-critical-tests.ts",
     "inngest:dev": "npx inngest-cli@latest dev -u http://localhost:4000/api/inngest",
     "pipeline:dev": "concurrently -n api,inngest -c green,magenta \"tsx watch src/server.ts\" \"npx inngest-cli@latest dev -u http://localhost:4000/api/inngest\""

@@ -72,14 +72,25 @@ function countMnemonicWords(value: string) {
 
 async function waitForConfirmation(client: algosdk.Algodv2, txId: string) {
   const status = await client.status().do();
-  let lastRound = status["last-round"];
+  const statusWithLegacy = status as typeof status & { "last-round"?: number | bigint };
+  const initialRound = statusWithLegacy["last-round"] ?? status.lastRound;
+  if (typeof initialRound !== "number" && typeof initialRound !== "bigint") {
+    throw new Error("Unable to read last round from Algod status response");
+  }
+
+  let lastRound = typeof initialRound === "bigint" ? initialRound : BigInt(initialRound);
   for (let i = 0; i < 15; i += 1) {
     const pending = await client.pendingTransactionInformation(txId).do();
-    const confirmedRound = pending["confirmed-round"];
-    if (confirmedRound && confirmedRound > 0) {
-      return confirmedRound as number;
+    const pendingWithLegacy = pending as typeof pending & { "confirmed-round"?: number | bigint };
+    const confirmedRound = pendingWithLegacy["confirmed-round"] ?? pending.confirmedRound;
+    if (typeof confirmedRound === "bigint" && confirmedRound > 0n) {
+      return Number(confirmedRound);
     }
-    lastRound += 1;
+    if (typeof confirmedRound === "number" && confirmedRound > 0) {
+      return confirmedRound;
+    }
+
+    lastRound += 1n;
     await client.statusAfterBlock(lastRound).do();
   }
   throw new Error(`Transaction ${txId} was not confirmed in time`);
@@ -217,7 +228,8 @@ async function main() {
     throw error;
   }
   const client = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT);
-  const lockReceiver = sender.addr === walletA ? walletB : walletA;
+  const senderAddress = String(sender.addr);
+  const lockReceiver = senderAddress === walletA ? walletB : walletA;
 
   const lockResult = await sendPayment({
     client,
@@ -247,8 +259,8 @@ async function main() {
 
   const output = {
     network: "testnet",
-    sender: sender.addr,
-    flow: `${sender.addr} -> ${lockReceiver} and ${sender.addr} -> ${walletB}`,
+    sender: senderAddress,
+    flow: `${senderAddress} -> ${lockReceiver} and ${senderAddress} -> ${walletB}`,
     noteTag,
     website: {
       submissionId: websiteSubmissionId || null,

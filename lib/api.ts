@@ -1789,6 +1789,38 @@ export async function adminRetryDeadLetterRequest(token: string, id: number) {
   return response.json();
 }
 
+export type PeraWalletTransaction = {
+  id: string;
+  type: string;
+  sender: string;
+  receiver: string;
+  amount_micro_algo: number;
+  fee_micro_algo: number;
+  direction: "in" | "out" | "self" | "unknown";
+  round_time_unix: number;
+  confirmed_round: number;
+  explorer_url: string;
+};
+
+export async function listPeraWalletTransactionsRequest(token: string, options?: { limit?: number }) {
+  const requestedLimit = Number(options?.limit ?? 12);
+  const limit = Math.max(1, Math.min(50, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 12));
+  const response = await safeFetch(`${API_BASE_URL}/users/me/wallet-transactions?limit=${limit}`, {
+    headers: withAuth(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load wallet transactions"));
+  }
+
+  return (await response.json()) as {
+    network: "testnet" | "mainnet";
+    wallet: string;
+    source: "indexer" | "fallback_db";
+    transactions: PeraWalletTransaction[];
+  };
+}
+
 export async function disconnectSessionRequest() {
   const response = await safeFetch(`${API_BASE_URL}/auth/disconnect`, {
     method: "POST",

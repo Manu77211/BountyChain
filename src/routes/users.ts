@@ -4,7 +4,7 @@ import { dbQuery } from "../../lib/db/client";
 import { requireAuth } from "../middleware/auth";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate";
 import { isValidAlgorandAddress, normalizeWalletAddress } from "../services/wallet";
-import { AlgorandService } from "../services/algorand";
+import { AlgorandService, type WalletTransactionView } from "../services/algorand";
 
 const router = Router();
 const algorandService = new AlgorandService();
@@ -79,6 +79,10 @@ const payoutsQuerySchema = z.object({
   page_size: z.coerce.number().int().min(1).max(50).default(10),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
+});
+
+const walletTransactionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(12),
 });
 
 const discoverUsersQuerySchema = z.object({
@@ -1089,6 +1093,129 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
         wallet_mock_mode: ALGOD_MOCK_MODE,
       });
     }
+    return next(error);
+  }
+});
+
+router.get("/me/wallet-transactions", requireAuth, validateQuery(walletTransactionsQuerySchema), async (request, response, next) => {
+  try {
+    if (!request.user) {
+      return response.status(401).json({
+        error: "Unauthorized",
+        code: 401,
+        detail: "Login required",
+      });
+    }
+
+    const query = request.query as unknown as { limit: number };
+    const profile = await dbQuery<{ wallet_address: string | null }>(
+      `
+        SELECT wallet_address
+        FROM users
+        WHERE id = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [request.user.userId],
+    );
+
+    if ((profile.rowCount ?? 0) === 0) {
+      return response.status(404).json({
+        error: "Not found",
+        code: 404,
+        detail: "User profile not found",
+      });
+    }
+
+    const walletAddress = String(profile.rows[0]?.wallet_address ?? "").trim().toUpperCase();
+    if (!walletAddress) {
+      return response.status(400).json({
+        error: "Invalid wallet",
+        code: 400,
+        detail: "Link wallet address before loading transactions",
+      });
+    }
+
+    const explorerTxBase = ALGORAND_NETWORK.includes("mainnet")
+      ? "https://algoexplorer.io/tx"
+      : "https://testnet.algoexplorer.io/tx";
+
+    try {
+      const items = await algorandService.listWalletTransactions(walletAddress, query.limit);
+      const data = items.map((tx: WalletTransactionView) => {
+        const direction = tx.sender === walletAddress && tx.receiver === walletAddress
+          ? "self"
+          : tx.receiver === walletAddress
+            ? "in"
+            : tx.sender === walletAddress
+              ? "out"
+              : "unknown";
+
+        return {
+          id: tx.id,
+          type: tx.type,
+          sender: tx.sender,
+          receiver: tx.receiver,
+          amount_micro_algo: tx.amountMicroAlgo,
+          fee_micro_algo: tx.feeMicroAlgo,
+          direction,
+          round_time_unix: tx.roundTimeUnix,
+          confirmed_round: tx.confirmedRound,
+          explorer_url: `${explorerTxBase}/${tx.id}`,
+        };
+      });
+
+      return response.status(200).json({
+        network: ALGORAND_NETWORK.includes("mainnet") ? "mainnet" : "testnet",
+        wallet: walletAddress,
+        source: "indexer",
+        transactions: data,
+      });
+    } catch {
+      const fallback = await dbQuery<{
+        tx_id: string;
+        amount_microalgo: string;
+        created_at_unix: number;
+      }>(
+        `
+          SELECT p.tx_id,
+                 COALESCE(p.actual_amount, 0)::text AS amount_microalgo,
+                 EXTRACT(EPOCH FROM p.created_at)::int AS created_at_unix
+          FROM payouts p
+          LEFT JOIN submissions s ON s.id = p.submission_id
+          LEFT JOIN bounties b ON b.id = s.bounty_id
+          WHERE p.tx_id IS NOT NULL
+            AND (
+              p.freelancer_id = $1
+              OR b.creator_id = $1
+            )
+          ORDER BY p.created_at DESC
+          LIMIT $2
+        `,
+        [request.user.userId, query.limit],
+      );
+
+      const data = fallback.rows.map((row) => ({
+        id: row.tx_id,
+        type: "payment",
+        sender: "",
+        receiver: "",
+        amount_micro_algo: Number(row.amount_microalgo ?? "0"),
+        fee_micro_algo: 0,
+        direction: "unknown",
+        round_time_unix: Number(row.created_at_unix ?? 0),
+        confirmed_round: 0,
+        explorer_url: `${explorerTxBase}/${row.tx_id}`,
+      }));
+
+      return response.status(200).json({
+        network: ALGORAND_NETWORK.includes("mainnet") ? "mainnet" : "testnet",
+        wallet: walletAddress,
+        source: "fallback_db",
+        transactions: data,
+      });
+    }
+  } catch (error) {
     return next(error);
   }
 });

@@ -47,6 +47,17 @@ export interface SplitPayoutShare {
   recipientUserId: string;
 }
 
+export interface WalletTransactionView {
+  id: string;
+  type: string;
+  sender: string;
+  receiver: string;
+  amountMicroAlgo: number;
+  feeMicroAlgo: number;
+  roundTimeUnix: number;
+  confirmedRound: number;
+}
+
 interface MockTransferRecipient {
   recipientUserId?: string;
   walletAddress: string;
@@ -334,6 +345,37 @@ export class AlgorandService {
     } catch {
       return false;
     }
+  }
+
+  async listWalletTransactions(walletAddress: string, limit = 12): Promise<WalletTransactionView[]> {
+    const normalized = normalizeWalletAddress(walletAddress);
+    const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const response = await this.indexer.searchForTransactions().address(normalized).limit(boundedLimit).do();
+    const rows = (response.transactions ?? []) as Array<Record<string, unknown>>;
+
+    return rows.map((tx) => {
+      const payment = (tx.paymentTransaction ?? tx["payment-transaction"] ?? {}) as Record<string, unknown>;
+      const assetTransfer = (
+        tx.assetTransferTransaction ?? tx["asset-transfer-transaction"] ?? {}
+      ) as Record<string, unknown>;
+      const sender = String(tx.sender ?? tx["sender"] ?? "").toUpperCase();
+      const receiver = String(payment.receiver ?? assetTransfer.receiver ?? "").toUpperCase();
+      const amount = Number(payment.amount ?? assetTransfer.amount ?? 0);
+      const fee = Number(tx.fee ?? 0);
+      const roundTime = Number(tx.roundTime ?? tx["round-time"] ?? 0);
+      const confirmedRound = Number(tx.confirmedRound ?? tx["confirmed-round"] ?? 0);
+
+      return {
+        id: String(tx.id ?? ""),
+        type: String(tx.txType ?? tx["tx-type"] ?? "unknown"),
+        sender,
+        receiver,
+        amountMicroAlgo: Number.isFinite(amount) ? amount : 0,
+        feeMicroAlgo: Number.isFinite(fee) ? fee : 0,
+        roundTimeUnix: Number.isFinite(roundTime) ? roundTime : 0,
+        confirmedRound: Number.isFinite(confirmedRound) ? confirmedRound : 0,
+      };
+    });
   }
 
   private async createBountyEscrow(input: {
