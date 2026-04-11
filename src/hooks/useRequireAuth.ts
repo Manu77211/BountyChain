@@ -56,7 +56,7 @@ export function useRequireAuth() {
     if (!token) {
       const redirectPath = pathname || "/dashboard";
       const encoded = encodeURIComponent(redirectPath);
-      router.replace(`/connect?redirect=${encoded}`);
+      router.replace(`/login?redirect=${encoded}`);
     }
   }, [isHydrating, pathname, router, token]);
 

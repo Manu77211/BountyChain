@@ -16,6 +16,7 @@ const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET ?? "dev-refresh-secr
 
 const ACCESS_TTL_SECONDS = process.env.HACKATHON_MODE === "true" ? 7 * 24 * 60 * 60 : 15 * 60;
 const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60;
+const HACKATHON_MODE = process.env.HACKATHON_MODE === "true";
 const REFRESH_COOKIE_NAME = "refresh_token";
 const ACCESS_COOKIE_NAME = "access_token";
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -60,6 +61,37 @@ function toClientRole(role: UserRole): "CLIENT" | "FREELANCER" {
 
 function toDbRole(role: "CLIENT" | "FREELANCER" | "client" | "freelancer"): UserRole {
   return role.toUpperCase() === "CLIENT" ? "client" : "freelancer";
+}
+
+function isDbConnectionError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "").toUpperCase()
+    : "";
+
+  return (
+    message.includes("database") ||
+    message.includes("enotfound") ||
+    message.includes("econnrefused") ||
+    message.includes("timed out") ||
+    code === "ENOTFOUND" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT"
+  );
+}
+
+function toClientRoleFromAny(role: string): "CLIENT" | "FREELANCER" | "ADMIN" | "ARBITRATOR" {
+  const normalized = role.toLowerCase();
+  if (normalized === "admin") {
+    return "ADMIN";
+  }
+  if (normalized === "arbitrator") {
+    return "ARBITRATOR";
+  }
+  if (normalized === "client") {
+    return "CLIENT";
+  }
+  return "FREELANCER";
 }
 
 function generateSyntheticWalletAddress() {
@@ -187,6 +219,22 @@ router.get("/me", requireAuth, async (request, response, next) => {
       },
     });
   } catch (error) {
+    if (HACKATHON_MODE && isDbConnectionError(error) && request.user) {
+      return response.status(200).json({
+        user: {
+          id: request.user.userId,
+          name: "BountyEscrow User",
+          email: "",
+          role: toClientRoleFromAny(request.user.role),
+          skills: [],
+          rating: 5,
+          trustScore: 100,
+          experience: "",
+          portfolio: [],
+          wallet_address: request.user.walletAddress,
+        },
+      });
+    }
     return next(error);
   }
 });

@@ -10,6 +10,8 @@ const PLATFORM_FEE_BPS = 200n;
 const BPS_DENOMINATOR = 10_000n;
 const MISMATCH_TOLERANCE_MICROALGO = 1000n;
 const CLOCK_SKEW_SECONDS = 60;
+const REVIEW_AUTO_RELEASE_ENABLED =
+  (process.env.REVIEW_AUTO_RELEASE_ENABLED ?? "false").toLowerCase() === "true";
 
 const algorandService = new AlgorandService();
 
@@ -36,6 +38,7 @@ interface PayoutPrecheckResult {
     id: string;
     creator_id: string;
     total_amount: string;
+    deadline: Date;
     status: BountyStatus;
     ai_score_threshold: number;
     payout_asset_id: string | null;
@@ -279,6 +282,7 @@ async function runPrePayoutChecks(input: {
     milestone_id: string | null;
     bounty_creator_id: string;
     bounty_total_amount: string;
+    bounty_deadline: Date;
     bounty_status: BountyStatus;
     ai_score_threshold: number;
     payout_asset_id: string | null;
@@ -300,6 +304,7 @@ async function runPrePayoutChecks(input: {
              p.milestone_id,
              b.creator_id AS bounty_creator_id,
              b.total_amount AS bounty_total_amount,
+             b.deadline AS bounty_deadline,
              b.status AS bounty_status,
              b.ai_score_threshold,
              b.payout_asset_id,
@@ -336,24 +341,32 @@ async function runPrePayoutChecks(input: {
     row.review_window_ends_at &&
     row.review_window_ends_at.getTime() > Date.now()
   ) {
-    throw new Error("SC-F-009: review window still active, payout deferred");
+    throw new Error("SC-F-009: payout is waiting for client review approval");
   }
 
-  if (
-    row.review_gate_status === "awaiting_client_review" &&
-    row.review_window_ends_at &&
-    row.review_window_ends_at.getTime() <= Date.now()
-  ) {
-    await dbQuery(
-      `
-        UPDATE submissions
-        SET review_gate_status = 'auto_released',
-            approved_for_payout_at = NOW(),
-            updated_at = NOW()
-        WHERE id = $1
-      `,
-      [row.submission_id],
-    );
+  if (row.review_gate_status === "awaiting_client_review") {
+    if (
+      REVIEW_AUTO_RELEASE_ENABLED &&
+      row.review_window_ends_at &&
+      row.review_window_ends_at.getTime() <= Date.now()
+    ) {
+      await dbQuery(
+        `
+          UPDATE submissions
+          SET review_gate_status = 'auto_released',
+              approved_for_payout_at = NOW(),
+              updated_at = NOW()
+          WHERE id = $1
+        `,
+        [row.submission_id],
+      );
+    } else {
+      throw new Error("SC-F-009: payout is waiting for client review approval");
+    }
+  }
+
+  if (!(row.review_gate_status === "approved" || row.review_gate_status === "auto_released")) {
+    throw new Error("SC-F-009: payout is blocked until client approval is recorded");
   }
 
   if (!(row.bounty_status === "in_progress" || row.bounty_status === "accepted")) {
@@ -397,6 +410,7 @@ async function runPrePayoutChecks(input: {
       id: row.bounty_id,
       creator_id: row.bounty_creator_id,
       total_amount: row.bounty_total_amount,
+      deadline: row.bounty_deadline,
       status: row.bounty_status,
       ai_score_threshold: row.ai_score_threshold,
       payout_asset_id: row.payout_asset_id,
@@ -469,7 +483,16 @@ async function ensureAssetOptInIfNeeded(precheck: PayoutPrecheckResult, notifier
 async function calculatePayoutShares(precheck: PayoutPrecheckResult): Promise<RecipientShare[]> {
   const bountyAmount = parseBigIntStrict(precheck.bounty.total_amount);
   const fee = (bountyAmount * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
-  const distributable = bountyAmount - fee;
+  const distributableBeforePenalty = bountyAmount - fee;
+
+  const deadlineDeductionPercent = calculateDeadlineDeductionPercent(
+    precheck.submission.submission_received_at,
+    precheck.bounty.deadline,
+  );
+
+  const deadlineDeductionAmount =
+    (distributableBeforePenalty * BigInt(deadlineDeductionPercent)) / 100n;
+  const distributable = distributableBeforePenalty - deadlineDeductionAmount;
 
   if (distributable <= 0n) {
     throw new Error("SC-F-004: distributable amount is non-positive after fee");
@@ -650,6 +673,7 @@ async function executePayout(
       finalScore: precheck.submission.final_score ?? 0,
       amountMicroAlgo: atomicShares[0].amountMicroAlgo,
       recipientWallet: atomicShares[0].walletAddress,
+      recipientUserId: atomicShares[0].recipientUserId,
     });
     txId = release.txId;
   } else {
@@ -1053,6 +1077,14 @@ function parseBigIntStrict(value: string) {
 
 function absBigInt(value: bigint) {
   return value >= 0n ? value : -value;
+}
+
+function calculateDeadlineDeductionPercent(submittedAt: Date, deadline: Date) {
+  const hoursLate = (submittedAt.getTime() - deadline.getTime()) / (1000 * 60 * 60);
+  if (hoursLate <= 0) {
+    return 0;
+  }
+  return Math.min(Math.ceil(hoursLate) * 5, 50);
 }
 
 function wait(ms: number) {

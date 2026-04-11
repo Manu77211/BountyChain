@@ -8,11 +8,59 @@ import { AlgorandService } from "../services/algorand";
 
 const router = Router();
 const algorandService = new AlgorandService();
+const HACKATHON_MODE = process.env.HACKATHON_MODE === "true";
+const ALGOD_MOCK_MODE = (process.env.ALGOD_MOCK_MODE ?? "true").toLowerCase() === "true";
+const ALGORAND_NETWORK = (
+  process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? process.env.ALGORAND_NETWORK ?? "testnet"
+).toLowerCase();
+
+function isDbConnectionError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "").toUpperCase()
+    : "";
+
+  return (
+    message.includes("database") ||
+    message.includes("enotfound") ||
+    message.includes("econnrefused") ||
+    message.includes("timed out") ||
+    code === "ENOTFOUND" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT"
+  );
+}
 
 const updateProfileSchema = z.object({
   email: z.string().email().optional(),
   wallet_address: z.string().optional(),
 });
+
+const mockWalletBalanceSchema = z.object({
+  amount_algo: z.coerce.number().min(0).max(1_000_000),
+});
+
+async function loadMockWalletBalanceMicroAlgo(userId: string) {
+  try {
+    const result = await dbQuery<{ balance_microalgo: string }>(
+      `
+        SELECT balance_microalgo::text AS balance_microalgo
+        FROM mock_wallet_balances
+        WHERE user_id = $1
+        LIMIT 1
+      `,
+      [userId],
+    );
+
+    if ((result.rowCount ?? 0) === 0) {
+      return null;
+    }
+
+    return BigInt(result.rows[0]?.balance_microalgo ?? "0");
+  } catch {
+    return null;
+  }
+}
 
 const userIdParamsSchema = z.object({
   id: z.string().uuid("id must be a UUID"),
@@ -562,6 +610,23 @@ router.get("/me/summary", requireAuth, async (request, response, next) => {
       disputes_count: Number(summary.rows[0]?.disputes_count ?? 0),
     });
   } catch (error) {
+    if (HACKATHON_MODE && isDbConnectionError(error) && request.user) {
+      return response.status(200).json({
+        client: {
+          bounties_posted: 0,
+          total_paid_out: "0",
+          avg_fulfillment_rate: 0,
+          total_bounties: 0,
+        },
+        freelancer: {
+          submissions: 0,
+          passed: 0,
+          avg_score: 0,
+          total_earned: "0",
+        },
+        disputes_count: 0,
+      });
+    }
     return next(error);
   }
 });
@@ -879,12 +944,41 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
       completed_count: number;
       disputed_count: number;
       escrow_total: string;
+      locked_escrow_total: string;
+      total_paid_out: string;
+      total_earned: string;
+      pending_payout_total: string;
     }>(
       `
         SELECT COUNT(*) FILTER (WHERE b.status IN ('open', 'in_progress', 'accepted'))::int AS active_count,
                COUNT(*) FILTER (WHERE b.status = 'completed')::int AS completed_count,
                COUNT(*) FILTER (WHERE b.status = 'disputed')::int AS disputed_count,
-               COALESCE(SUM(b.total_amount), 0)::text AS escrow_total
+               COALESCE(SUM(b.total_amount), 0)::text AS escrow_total,
+               COALESCE(SUM(b.total_amount) FILTER (
+                 WHERE b.creator_id = $1
+                   AND b.escrow_locked = TRUE
+                   AND b.status IN ('open', 'in_progress', 'disputed')
+               ), 0)::text AS locked_escrow_total,
+               (
+                 SELECT COALESCE(SUM(p.actual_amount), 0)::text
+                 FROM payouts p
+                 JOIN submissions s ON s.id = p.submission_id
+                 JOIN bounties b_paid ON b_paid.id = s.bounty_id
+                 WHERE b_paid.creator_id = $1
+                   AND p.status = 'completed'
+               ) AS total_paid_out,
+               (
+                 SELECT COALESCE(SUM(p.actual_amount), 0)::text
+                 FROM payouts p
+                 WHERE p.freelancer_id = $1
+                   AND p.status = 'completed'
+               ) AS total_earned,
+               (
+                 SELECT COALESCE(SUM(p.actual_amount), 0)::text
+                 FROM payouts p
+                 WHERE p.freelancer_id = $1
+                   AND p.status IN ('pending', 'processing', 'quarantined')
+               ) AS pending_payout_total
         FROM bounties b
         WHERE b.deleted_at IS NULL
           AND (
@@ -917,14 +1011,34 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
       [request.user.userId, profile.rows[0].role],
     );
 
-    let walletBalanceMicroAlgo = BigInt(0);
+    let walletBalanceMicroAlgo = 0n;
     let walletBalanceAvailable = true;
+    let walletBalanceSource = "none";
     if (profile.rows[0].wallet_address) {
-      try {
-        walletBalanceMicroAlgo = await algorandService.getWalletBalanceMicroAlgo(profile.rows[0].wallet_address);
-      } catch {
-        walletBalanceMicroAlgo = BigInt(0);
-        walletBalanceAvailable = false;
+      if (ALGOD_MOCK_MODE) {
+        const override = await loadMockWalletBalanceMicroAlgo(request.user.userId);
+        if (override !== null) {
+          walletBalanceMicroAlgo = override;
+          walletBalanceSource = "mock_override";
+        } else {
+          try {
+            walletBalanceMicroAlgo = await algorandService.getWalletBalanceMicroAlgo(profile.rows[0].wallet_address);
+            walletBalanceSource = "mock_default";
+          } catch {
+            walletBalanceMicroAlgo = 0n;
+            walletBalanceAvailable = false;
+            walletBalanceSource = "mock_unavailable";
+          }
+        }
+      } else {
+        try {
+          walletBalanceMicroAlgo = await algorandService.getWalletBalanceMicroAlgo(profile.rows[0].wallet_address);
+          walletBalanceSource = "onchain";
+        } catch {
+          walletBalanceMicroAlgo = 0n;
+          walletBalanceAvailable = false;
+          walletBalanceSource = "unavailable";
+        }
       }
     }
 
@@ -935,9 +1049,116 @@ router.get("/me/stats", requireAuth, async (request, response, next) => {
       completed_bounties: Number(counts.rows[0]?.completed_count ?? 0),
       disputed_bounties: Number(counts.rows[0]?.disputed_count ?? 0),
       escrow_total: counts.rows[0]?.escrow_total ?? "0",
+      locked_escrow_microalgo: counts.rows[0]?.locked_escrow_total ?? "0",
+      locked_escrow_algo: Number(counts.rows[0]?.locked_escrow_total ?? "0") / 1_000_000,
+      total_paid_out_microalgo: counts.rows[0]?.total_paid_out ?? "0",
+      total_paid_out_algo: Number(counts.rows[0]?.total_paid_out ?? "0") / 1_000_000,
+      total_earned_microalgo: counts.rows[0]?.total_earned ?? "0",
+      total_earned_algo: Number(counts.rows[0]?.total_earned ?? "0") / 1_000_000,
+      pending_payout_microalgo: counts.rows[0]?.pending_payout_total ?? "0",
+      pending_payout_algo: Number(counts.rows[0]?.pending_payout_total ?? "0") / 1_000_000,
       wallet_balance_microalgo: walletBalanceMicroAlgo.toString(),
       wallet_balance_algo: Number(walletBalanceMicroAlgo) / 1_000_000,
       wallet_balance_available: walletBalanceAvailable,
+      wallet_balance_source: walletBalanceSource,
+      wallet_balance_network: ALGORAND_NETWORK,
+      wallet_mock_mode: ALGOD_MOCK_MODE,
+    });
+  } catch (error) {
+    if (HACKATHON_MODE && isDbConnectionError(error) && request.user) {
+      return response.status(200).json({
+        role: request.user.role,
+        reputation: 100,
+        active_bounties: 0,
+        completed_bounties: 0,
+        disputed_bounties: 0,
+        escrow_total: "0",
+        locked_escrow_microalgo: "0",
+        locked_escrow_algo: 0,
+        total_paid_out_microalgo: "0",
+        total_paid_out_algo: 0,
+        total_earned_microalgo: "0",
+        total_earned_algo: 0,
+        pending_payout_microalgo: "0",
+        pending_payout_algo: 0,
+        wallet_balance_microalgo: "0",
+        wallet_balance_algo: 0,
+        wallet_balance_available: false,
+        wallet_balance_source: "unavailable",
+        wallet_balance_network: ALGORAND_NETWORK,
+        wallet_mock_mode: ALGOD_MOCK_MODE,
+      });
+    }
+    return next(error);
+  }
+});
+
+router.post("/me/mock-balance", requireAuth, validateBody(mockWalletBalanceSchema), async (request, response, next) => {
+  try {
+    if (!request.user) {
+      return response.status(401).json({
+        error: "Unauthorized",
+        code: 401,
+        detail: "Login required",
+      });
+    }
+
+    if (!ALGOD_MOCK_MODE) {
+      return response.status(400).json({
+        error: "Invalid operation",
+        code: 400,
+        detail: "Mock balance is only available when ALGOD_MOCK_MODE=true",
+      });
+    }
+
+    const profile = await dbQuery<{ wallet_address: string | null }>(
+      `
+        SELECT wallet_address
+        FROM users
+        WHERE id = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [request.user.userId],
+    );
+
+    if ((profile.rowCount ?? 0) === 0) {
+      return response.status(404).json({
+        error: "Not found",
+        code: 404,
+        detail: "User profile not found",
+      });
+    }
+
+    if (!profile.rows[0].wallet_address) {
+      return response.status(400).json({
+        error: "Invalid wallet",
+        code: 400,
+        detail: "Link a wallet before adding mock funds",
+      });
+    }
+
+    const amountAlgo = Number(request.body.amount_algo);
+    const amountMicroAlgo = BigInt(Math.trunc(amountAlgo * 1_000_000));
+
+    await dbQuery(
+      `
+        INSERT INTO mock_wallet_balances (user_id, wallet_address, balance_microalgo)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id)
+        DO UPDATE SET wallet_address = EXCLUDED.wallet_address,
+                      balance_microalgo = EXCLUDED.balance_microalgo,
+                      updated_at = NOW()
+      `,
+      [request.user.userId, profile.rows[0].wallet_address, amountMicroAlgo.toString()],
+    );
+
+    return response.status(200).json({
+      wallet_balance_microalgo: amountMicroAlgo.toString(),
+      wallet_balance_algo: Number(amountMicroAlgo) / 1_000_000,
+      wallet_balance_source: "mock_override",
+      wallet_balance_network: ALGORAND_NETWORK,
+      wallet_mock_mode: true,
     });
   } catch (error) {
     return next(error);
@@ -987,6 +1208,22 @@ router.get("/me", requireAuth, async (request, response, next) => {
       wallet_linked: Boolean(result.rows[0].wallet_address),
     });
   } catch (error) {
+    if (HACKATHON_MODE && isDbConnectionError(error) && request.user) {
+      return response.status(200).json({
+        user: {
+          id: request.user.userId,
+          email: null,
+          wallet_address: request.user.walletAddress,
+          role: request.user.role,
+          reputation_score: 100,
+          is_sanctions_flagged: false,
+          is_banned: false,
+          created_at: new Date(0).toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        wallet_linked: Boolean(request.user.walletAddress),
+      });
+    }
     return next(error);
   }
 });

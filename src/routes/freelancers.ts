@@ -232,7 +232,10 @@ async function requestAiProjectSuggestion(input: {
     const prompt = [
       "Improve a bounty posting for a software freelancer marketplace.",
       "Return valid JSON only with keys: title, description, acceptance_criteria.",
-      "Keep title <= 120 chars, description 120-1200 chars, acceptance_criteria as concise bullet points.",
+      "Keep title <= 120 chars, description 120-1200 chars, acceptance_criteria as detailed bullet points.",
+      "IMPORTANT: Expand technical detail. Make description and acceptance_criteria MORE informative than the draft.",
+      "For acceptance_criteria, include specific technical requirements, testing standards, code quality expectations, and definitions of done.",
+      "Do not remove or simplify any technical aspects from the draft.",
       `Draft title: ${input.title?.trim() || "(none)"}`,
       `Draft description: ${input.description}`,
       `Draft acceptance criteria: ${input.acceptanceCriteria?.trim() || "(none)"}`,
@@ -283,8 +286,11 @@ async function requestAiProjectSuggestion(input: {
         const suggestedAcceptanceCriteriaRaw = cleanAiField(
           parsed.acceptance_criteria || parsed.acceptanceCriteria || parsed.acceptance || parsed.criteria,
         );
+        const inputDescriptionLength = input.description.trim().length;
+        const inputCriteriaLength = input.acceptanceCriteria?.trim().length ?? 0;
+        const minimumDescriptionLength = Math.max(80, Math.floor(inputDescriptionLength * 0.85));
 
-        if (suggestedDescription.length < 60) {
+        if (suggestedDescription.length < minimumDescriptionLength) {
           throw new Error(`AI response description too short for model ${model}`);
         }
 

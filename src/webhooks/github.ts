@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import express, { Router } from "express";
 import { dbQuery } from "../../lib/db/client";
-import { inngest } from "../inngest/client";
+import { inngest } from "../jobs/aiScoring.job";
 import { queueCiValidationFromWorkflowWebhook } from "../services/validation.service";
 
 const router = Router();

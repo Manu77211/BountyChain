@@ -220,9 +220,6 @@ export default function DashboardBountiesPage() {
               My Ongoing
             </Button>
           </div>
-          <p className="mt-2 text-xs text-[#4b4b4b]">
-            My Work tracks submission/CI/payout workflow after your PR is submitted. This page handles bounty discovery and ongoing bounty visibility.
-          </p>
         </Card>
       ) : null}
 
@@ -356,13 +353,6 @@ export default function DashboardBountiesPage() {
         </Card>
       ) : null}
 
-      <Card>
-        <h3 className="text-lg font-semibold">Roadmap Ready</h3>
-        <p className="mt-1 text-sm text-[#4b4b4b]">
-          This page is wired for future elements like match scores, recommended applicants, fraud risk indicators,
-          and payout forecast insights without changing the route contract.
-        </p>
-      </Card>
     </section>
   );
 }

@@ -12,7 +12,7 @@ import githubRoutes from "./routes/github";
 import projectsRoutes from "./routes/projects";
 import submissionsRoutes from "./routes/submissions";
 import userRoutes from "./routes/users";
-import { inngestApp } from "./inngest/serve";
+import { inngestApp } from "./jobs";
 import githubWebhookRoutes from "./webhooks/github";
 import { AppError, errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import {

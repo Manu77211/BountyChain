@@ -14,6 +14,7 @@ import {
   createBountyRequest,
   fundBountyRequest,
   listMyBountiesRequest,
+  meStatsRequest,
   recommendFreelancersRequest,
   suggestProjectDescriptionRequest,
   validateGithubRepoRequest,
@@ -97,6 +98,15 @@ type DraftBounty = {
   created_at: string;
 };
 
+type MeStatsResponse = {
+  wallet_balance_microalgo?: string;
+  wallet_balance_algo?: number;
+  wallet_balance_available?: boolean;
+  wallet_balance_source?: string;
+  wallet_balance_network?: string;
+  wallet_mock_mode?: boolean;
+};
+
 const languageOptions = [
   "TypeScript",
   "JavaScript",
@@ -106,6 +116,13 @@ const languageOptions = [
   "Java",
   "C#",
   "Solidity",
+];
+
+const ACCEPTANCE_BASELINE_LINES = [
+  "- Required functionality is fully implemented and verified.",
+  "- Code quality standards are met and lint/build checks pass.",
+  "- Documentation explains setup, usage, and expected outputs.",
+  "- Changes avoid regressions in existing critical flows.",
 ];
 
 const scoringModes: Array<{ value: "hybrid" | "ai_only" | "ci_only"; title: string; desc: string; icon: typeof Sparkles; recommended?: boolean }> = [
@@ -130,12 +147,37 @@ const scoringModes: Array<{ value: "hybrid" | "ai_only" | "ci_only"; title: stri
   },
 ];
 
+function toDateTimeInputValue(value: Date | string) {
+  const parsed = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  // For datetime-local, we need to format in local time without timezone conversion
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const date = String(parsed.getDate()).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  
+  return `${year}-${month}-${date}T${hours}:${minutes}`;
+}
+
+function parseDateTimeLocalInput(value: string): Date {
+  // datetime-local input values are in format "YYYY-MM-DDTHH:mm"
+  // and represent local time (no timezone)
+  const [datePart, timePart] = value.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hours, minutes] = timePart.split(":").map(Number);
+  return new Date(year, month - 1, day, hours, minutes, 0);
+}
+
 function defaultDeadline() {
-  return new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString().slice(0, 16);
+  return toDateTimeInputValue(new Date(Date.now() + 72 * 60 * 60 * 1000)) ?? "";
 }
 
 function toDateTimeLocal(value: string) {
-  return new Date(value).toISOString().slice(0, 16);
+  return toDateTimeInputValue(value) ?? defaultDeadline();
 }
 
 function normalizeLanguageLabel(value: string) {
@@ -152,13 +194,75 @@ function textAreaAutoResize(target: HTMLTextAreaElement) {
   target.style.height = `${Math.min(target.scrollHeight, 300)}px`;
 }
 
-function loadPersisted() {
+function ensureAcceptanceBaseline(value: string) {
+  const current = value.trim();
+  const normalized = current.toLowerCase();
+  const missing = ACCEPTANCE_BASELINE_LINES.filter(
+    (line) => !normalized.includes(line.replace(/^-\s*/, "").toLowerCase()),
+  );
+  if (missing.length === 0) {
+    return current;
+  }
+
+  if (!current) {
+    return ACCEPTANCE_BASELINE_LINES.join("\n");
+  }
+
+  return `${current}\n${missing.join("\n")}`;
+}
+
+function extractMilestoneSteps(value: string) {
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*\d.)\s]+/, "").trim())
+    .filter((line) => line.length >= 12);
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(line);
+  }
+
+  return unique.slice(0, 6);
+}
+
+function buildMilestonePlan(input: { acceptanceCriteria: string; totalAmountAlgo: number }) {
+  const steps = extractMilestoneSteps(input.acceptanceCriteria);
+  const selectedSteps = steps.length > 0
+    ? steps
+    : [
+        "Finalize implementation and deliver working solution.",
+        "Run validation checks and provide proof of passing results.",
+        "Prepare handoff notes and usage documentation.",
+      ];
+
+  const count = Math.max(1, selectedSteps.length);
+  const total = Math.max(0.1, Number(input.totalAmountAlgo || 0));
+  const even = Number((total / count).toFixed(2));
+
+  return selectedSteps.map((step, index) => ({
+    title: `Milestone ${index + 1}`,
+    description: step,
+    amountAlgo: index === count - 1
+      ? Number((total - even * (count - 1)).toFixed(2))
+      : even,
+  }));
+}
+
+function loadPersisted(storageKey: string) {
   if (typeof window === "undefined") {
     return null;
   }
 
   try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    const raw = window.sessionStorage.getItem(storageKey);
     if (!raw) {
       return null;
     }
@@ -184,13 +288,26 @@ export default function CreateBountyPage() {
   const [recommendationError, setRecommendationError] = useState<string | null>(null);
   const [descriptionSuggestionLoading, setDescriptionSuggestionLoading] = useState(false);
   const [descriptionSuggestionMessage, setDescriptionSuggestionMessage] = useState<string | null>(null);
+  const [milestoneSuggestionLoading, setMilestoneSuggestionLoading] = useState(false);
+  const [milestoneSuggestionMessage, setMilestoneSuggestionMessage] = useState<string | null>(null);
   const [shortlistedIds, setShortlistedIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<DraftBounty[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
+  const [walletBalanceMicroAlgo, setWalletBalanceMicroAlgo] = useState<bigint>(0n);
+  const [walletBalanceAvailable, setWalletBalanceAvailable] = useState(true);
+  const [walletBalanceSource, setWalletBalanceSource] = useState("unknown");
+  const [walletBalanceNetwork, setWalletBalanceNetwork] = useState("");
+  const [walletMockMode, setWalletMockMode] = useState(false);
+  const [amountUnit, setAmountUnit] = useState<"algo" | "micro">("algo");
 
   const isClient = String(user?.role ?? "").toUpperCase() === "CLIENT";
   const isHackathonMode = process.env.NEXT_PUBLIC_HACKATHON_MODE === "true";
-  const connectedNetwork = isHackathonMode ? "TestNet" : "MainNet";
+  const connectedNetwork = walletBalanceNetwork || (isHackathonMode ? "testnet" : "mainnet");
+  const storageKey = useMemo(() => {
+    const userId = user?.id ?? "anonymous";
+    const role = String(user?.role ?? "guest").toUpperCase();
+    return `${STORAGE_KEY}:${userId}:${role}`;
+  }, [user?.id, user?.role]);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -233,14 +350,14 @@ export default function CreateBountyPage() {
   }, [isClient, router, user]);
 
   useEffect(() => {
-    const persisted = loadPersisted();
+    const persisted = loadPersisted(storageKey);
     if (!persisted) {
       return;
     }
 
     form.reset(persisted.values);
     setStep(Math.max(1, Math.min(4, persisted.step)));
-  }, [form]);
+  }, [form, storageKey]);
 
   useEffect(() => {
     const subscription = form.watch((values) => {
@@ -248,7 +365,7 @@ export default function CreateBountyPage() {
         return;
       }
       window.sessionStorage.setItem(
-        STORAGE_KEY,
+        storageKey,
         JSON.stringify({
           step,
           values,
@@ -257,7 +374,41 @@ export default function CreateBountyPage() {
     });
 
     return () => subscription.unsubscribe();
-  }, [form, step]);
+  }, [form, step, storageKey]);
+
+  useEffect(() => {
+    async function loadWalletBalance() {
+      if (!token || !isClient) {
+        setWalletBalanceMicroAlgo(0n);
+        setWalletBalanceAvailable(true);
+        setWalletBalanceSource("none");
+        setWalletBalanceNetwork("");
+        setWalletMockMode(false);
+        return;
+      }
+
+      try {
+        const stats = (await meStatsRequest(token)) as MeStatsResponse;
+        if (typeof stats.wallet_balance_microalgo === "string") {
+          setWalletBalanceMicroAlgo(BigInt(stats.wallet_balance_microalgo));
+        } else {
+          setWalletBalanceMicroAlgo(BigInt(toMicroAlgo(Number(stats.wallet_balance_algo ?? 0))));
+        }
+        setWalletBalanceAvailable(stats.wallet_balance_available !== false);
+        setWalletBalanceSource(String(stats.wallet_balance_source ?? (stats.wallet_mock_mode ? "mock_default" : "onchain")));
+        setWalletBalanceNetwork(String(stats.wallet_balance_network ?? (isHackathonMode ? "testnet" : "mainnet")));
+        setWalletMockMode(Boolean(stats.wallet_mock_mode));
+      } catch {
+        setWalletBalanceMicroAlgo(0n);
+        setWalletBalanceAvailable(false);
+        setWalletBalanceSource("unavailable");
+        setWalletBalanceNetwork("");
+        setWalletMockMode(false);
+      }
+    }
+
+    void loadWalletBalance();
+  }, [isClient, token]);
 
   useEffect(() => {
     async function loadRecentDrafts() {
@@ -293,15 +444,44 @@ export default function CreateBountyPage() {
   );
 
   const shortDeadline = useMemo(() => {
-    const value = new Date(deadlineValue).getTime();
-    return value - Date.now() < 24 * 60 * 60 * 1000;
+    try {
+      const deadlineDate = parseDateTimeLocalInput(deadlineValue);
+      return deadlineDate.getTime() - Date.now() < 24 * 60 * 60 * 1000;
+    } catch {
+      return false;
+    }
   }, [deadlineValue]);
 
-  const currentBalanceAlgo = Number(process.env.NEXT_PUBLIC_TEST_WALLET_BALANCE_ALGO ?? 10);
-  const totalLockAlgo = Number(totalAmountAlgo || 0) + 0.2;
-  const neededMoreAlgo = Math.max(0, totalLockAlgo - currentBalanceAlgo);
-  const insufficientBalance = neededMoreAlgo > 0;
-  const wrongNetwork = connectedNetwork !== "MainNet" && !isHackathonMode;
+  const currentBalanceMicroAlgo = walletBalanceMicroAlgo;
+  const totalLockMicroAlgo = BigInt(toMicroAlgo(Number(totalAmountAlgo || 0))) + 200_000n;
+  const neededMoreMicroAlgo = totalLockMicroAlgo > currentBalanceMicroAlgo
+    ? totalLockMicroAlgo - currentBalanceMicroAlgo
+    : 0n;
+  const currentBalanceAlgo = fromMicroAlgo(currentBalanceMicroAlgo.toString());
+  const totalLockAlgo = fromMicroAlgo(totalLockMicroAlgo.toString());
+  const neededMoreAlgo = fromMicroAlgo(neededMoreMicroAlgo.toString());
+  const insufficientBalance = walletBalanceAvailable && neededMoreMicroAlgo > 0n;
+  const wrongNetwork = !isHackathonMode && connectedNetwork.toLowerCase() !== "mainnet";
+  const totalAmountDisplayValue = amountUnit === "micro"
+    ? String(toMicroAlgo(Number(totalAmountAlgo || 0)))
+    : String(Number(totalAmountAlgo || 0));
+
+  function onTotalAmountChange(rawValue: string) {
+    const trimmed = rawValue.trim();
+    const parsed = Number(trimmed);
+
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      form.setValue("totalAmountAlgo", 0, { shouldValidate: true });
+      return;
+    }
+
+    if (amountUnit === "micro") {
+      form.setValue("totalAmountAlgo", fromMicroAlgo(parsed), { shouldValidate: true });
+      return;
+    }
+
+    form.setValue("totalAmountAlgo", parsed, { shouldValidate: true });
+  }
 
   async function validateRepoOnBlur() {
     const repoUrl = form.getValues("repoUrl");
@@ -383,34 +563,92 @@ export default function CreateBountyPage() {
     setDescriptionSuggestionMessage(null);
 
     try {
-      const title = form.getValues("title").trim();
-      const acceptanceCriteria = form.getValues("acceptanceCriteria").trim();
+      const currentTitle = form.getValues("title").trim();
+      const currentDescription = form.getValues("description").trim();
+      const currentAcceptanceCriteria = form.getValues("acceptanceCriteria").trim();
       const response = await suggestProjectDescriptionRequest(token, {
-        title: title.length >= 3 ? title : undefined,
+        title: currentTitle.length >= 3 ? currentTitle : undefined,
         description,
-        acceptance_criteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : undefined,
+        acceptance_criteria: currentAcceptanceCriteria.length > 0 ? currentAcceptanceCriteria : undefined,
         allowed_languages: form.getValues("allowedLanguages").map((value) => value.toLowerCase()),
       });
 
-      form.setValue("title", response.data.suggestedTitle, { shouldDirty: true, shouldValidate: true });
-      form.setValue("description", response.data.suggestedDescription, {
+      const suggestedTitle = String(response.data.suggestedTitle ?? "").trim();
+      const suggestedDescription = String(response.data.suggestedDescription ?? "").trim();
+      const suggestedAcceptanceCriteria = String(response.data.suggestedAcceptanceCriteria ?? "").trim();
+
+      const minDescriptionLength = Math.max(80, Math.floor(currentDescription.length * 0.85));
+      const minCriteriaLength = Math.max(100, Math.floor(currentAcceptanceCriteria.length * 0.85));
+
+      const nextTitle = suggestedTitle.length >= 3 ? suggestedTitle : currentTitle;
+      const nextDescription = suggestedDescription.length >= minDescriptionLength
+        ? suggestedDescription
+        : currentDescription;
+      const nextAcceptanceCriteria = suggestedAcceptanceCriteria.length >= minCriteriaLength
+        ? suggestedAcceptanceCriteria
+        : currentAcceptanceCriteria;
+
+      form.setValue("title", nextTitle, { shouldDirty: true, shouldValidate: true });
+      form.setValue("description", nextDescription, {
         shouldDirty: true,
         shouldValidate: true,
       });
-      form.setValue("acceptanceCriteria", response.data.suggestedAcceptanceCriteria, {
+      form.setValue("acceptanceCriteria", nextAcceptanceCriteria, {
         shouldDirty: true,
         shouldValidate: true,
       });
 
       setDescriptionSuggestionMessage(
         response.data.aiUsed
-          ? "Description updated using AI suggestion."
+          ? "Description and acceptance criteria updated using AI suggestion."
           : "Description updated successfully.",
       );
     } catch (error) {
       setDescriptionSuggestionMessage((error as Error).message);
     } finally {
       setDescriptionSuggestionLoading(false);
+    }
+  }
+
+  async function generateMilestonesWithAi() {
+    if (!token) {
+      setMilestoneSuggestionMessage("Session missing. Please sign in again.");
+      return;
+    }
+
+    const description = form.getValues("description").trim();
+    const acceptanceCriteria = form.getValues("acceptanceCriteria").trim();
+    if (description.length < 12) {
+      setMilestoneSuggestionMessage("Add a project description first.");
+      return;
+    }
+
+    setMilestoneSuggestionLoading(true);
+    setMilestoneSuggestionMessage(null);
+    try {
+      const response = await suggestProjectDescriptionRequest(token, {
+        title: form.getValues("title").trim() || undefined,
+        description,
+        acceptance_criteria: acceptanceCriteria || undefined,
+        allowed_languages: form.getValues("allowedLanguages").map((value) => value.toLowerCase()),
+      });
+
+      const aiCriteria = String(response.data.suggestedAcceptanceCriteria ?? "").trim();
+      const finalCriteria = aiCriteria.length >= 60 ? aiCriteria : acceptanceCriteria;
+      const mergedCriteria = finalCriteria.length > 0 ? finalCriteria : ensureAcceptanceBaseline("");
+      const milestones = buildMilestonePlan({
+        acceptanceCriteria: mergedCriteria,
+        totalAmountAlgo: Number(form.getValues("totalAmountAlgo") || 0),
+      });
+
+      form.setValue("acceptanceCriteria", mergedCriteria, { shouldDirty: true, shouldValidate: true });
+      form.setValue("payoutMode", "milestones", { shouldDirty: true, shouldValidate: true });
+      form.setValue("milestones", milestones, { shouldDirty: true, shouldValidate: true });
+      setMilestoneSuggestionMessage(`Generated ${milestones.length} milestones from AI criteria.`);
+    } catch (error) {
+      setMilestoneSuggestionMessage((error as Error).message);
+    } finally {
+      setMilestoneSuggestionLoading(false);
     }
   }
 
@@ -512,7 +750,9 @@ export default function CreateBountyPage() {
 
     if (!isHackathonMode && insufficientBalance) {
       setFundingState("error");
-      setSubmitError(`Insufficient balance. You need ${neededMoreAlgo.toFixed(2)} more ALGO.`);
+      setSubmitError(
+        `Insufficient balance. You need ${neededMoreAlgo.toFixed(2)} ALGO (${neededMoreMicroAlgo.toString()} microALGO) more.`,
+      );
       return;
     }
 
@@ -540,7 +780,7 @@ export default function CreateBountyPage() {
           scoring_mode: values.scoringMode,
           ai_score_threshold: values.aiThreshold,
           max_freelancers: values.maxFreelancers === "unlimited" ? 9999 : Number(values.maxFreelancers),
-          deadline: new Date(values.deadline).toISOString(),
+          deadline: parseDateTimeLocalInput(values.deadline).toISOString(),
         })) as { bounty: { id: string; status?: string } };
         bountyId = created.bounty.id;
         bountyStatus = String(created.bounty.status ?? "").toLowerCase();
@@ -549,7 +789,7 @@ export default function CreateBountyPage() {
 
       if (bountyStatus === "open") {
         setFundingState("success");
-        window.sessionStorage.removeItem(STORAGE_KEY);
+        window.sessionStorage.removeItem(storageKey);
         void confetti({
           particleCount: 120,
           spread: 80,
@@ -565,7 +805,7 @@ export default function CreateBountyPage() {
       setFundingState("confirming");
       await new Promise((resolve) => setTimeout(resolve, 450));
       setFundingState("success");
-      window.sessionStorage.removeItem(STORAGE_KEY);
+      window.sessionStorage.removeItem(storageKey);
       void confetti({
         particleCount: 120,
         spread: 80,
@@ -585,7 +825,7 @@ export default function CreateBountyPage() {
       }
       if (message.toLowerCase().includes("draft or pending_escrow") || message.toLowerCase().includes("already_open")) {
         setFundingState("success");
-        window.sessionStorage.removeItem(STORAGE_KEY);
+        window.sessionStorage.removeItem(storageKey);
         return;
       }
       setSubmitError(message);
@@ -925,20 +1165,41 @@ export default function CreateBountyPage() {
 
                 <div>
                   <label className="mb-1 block text-sm font-semibold">Total Amount</label>
+                  <div className="mb-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAmountUnit("algo")}
+                      className={`border px-3 py-1 text-xs font-semibold ${
+                        amountUnit === "algo" ? "border-[#1040c0] bg-[#1040c0] text-white" : "border-[#121212] bg-white"
+                      }`}
+                    >
+                      ALGO
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAmountUnit("micro")}
+                      className={`border px-3 py-1 text-xs font-semibold ${
+                        amountUnit === "micro" ? "border-[#1040c0] bg-[#1040c0] text-white" : "border-[#121212] bg-white"
+                      }`}
+                    >
+                      microALGO
+                    </button>
+                  </div>
                   <div className="flex items-center gap-2">
                     <Input
                       type="number"
-                      min={0.1}
-                      step={0.1}
-                      value={form.watch("totalAmountAlgo")}
-                      onChange={(event) =>
-                        form.setValue("totalAmountAlgo", Number(event.target.value), { shouldValidate: true })
-                      }
+                      min={amountUnit === "micro" ? 1 : 0.000001}
+                      step={amountUnit === "micro" ? 1 : 0.000001}
+                      value={totalAmountDisplayValue}
+                      onChange={(event) => onTotalAmountChange(event.target.value)}
                     />
-                    <span className="text-sm font-bold text-[#6e5a00]">ALGO</span>
+                    <span className="text-sm font-bold text-[#6e5a00]">{amountUnit === "micro" ? "microALGO" : "ALGO"}</span>
                   </div>
                   <p className="mt-1 text-xs text-[#4b4b4b]">
                     1 ALGO = {MICRO_ALGO_PER_ALGO.toLocaleString()} microALGO. Balance checks run in microALGO before funding.
+                  </p>
+                  <p className="mt-1 text-xs text-[#4b4b4b]">
+                    Stored amount: {Number(totalAmountAlgo || 0).toFixed(6)} ALGO ({toMicroAlgo(Number(totalAmountAlgo || 0)).toLocaleString()} microALGO)
                   </p>
                 </div>
 
@@ -946,15 +1207,30 @@ export default function CreateBountyPage() {
                   <div className="space-y-3 rounded-none border-2 border-[#121212] bg-[#f8f8f8] p-3">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-semibold">Milestones</p>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        className="h-8 px-3 text-xs"
-                        onClick={() => append({ title: "", amountAlgo: 0, description: "" })}
-                      >
-                        Add Milestone
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="h-8 px-3 text-xs"
+                          onClick={() => void generateMilestonesWithAi()}
+                          disabled={milestoneSuggestionLoading}
+                        >
+                          {milestoneSuggestionLoading ? "Generating..." : "Generate with AI"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="h-8 px-3 text-xs"
+                          onClick={() => append({ title: "", amountAlgo: 0, description: "" })}
+                        >
+                          Add Milestone
+                        </Button>
+                      </div>
                     </div>
+
+                    {milestoneSuggestionMessage ? (
+                      <p className="text-xs text-[#4b4b4b]">{milestoneSuggestionMessage}</p>
+                    ) : null}
 
                     {fields.map((field, index) => (
                       <div
@@ -1021,9 +1297,11 @@ export default function CreateBountyPage() {
                   <label className="mb-1 block text-sm font-semibold">Deadline</label>
                   <Input
                     type="datetime-local"
-                    className="bg-[#101520] text-white"
+                    className="bg-white text-[#121212]"
                     value={form.watch("deadline")}
-                    onChange={(event) => form.setValue("deadline", event.target.value, { shouldValidate: true })}
+                    onChange={(event) =>
+                      form.setValue("deadline", event.target.value, { shouldValidate: true, shouldDirty: true })
+                    }
                   />
                   {shortDeadline ? (
                     <div className="mt-2 border border-[#be8b00] bg-[#fff4d6] p-2 text-xs text-[#7a5a00]">
@@ -1065,6 +1343,10 @@ export default function CreateBountyPage() {
                   </div>
                   <p className="text-sm font-semibold">{form.watch("title")}</p>
                   <p className="text-xs text-[#4b4b4b]">{form.watch("description")}</p>
+                  <div className="rounded-none border border-[#d7d7d7] bg-white p-2">
+                    <p className="text-xs font-semibold text-[#121212]">Acceptance Criteria</p>
+                    <pre className="mt-1 whitespace-pre-wrap text-xs text-[#4b4b4b]">{form.watch("acceptanceCriteria")}</pre>
+                  </div>
 
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-semibold">Technical Config</p>
@@ -1083,17 +1365,52 @@ export default function CreateBountyPage() {
                   <p className="text-xs text-[#4b4b4b]">
                     {Number(form.watch("totalAmountAlgo") || 0).toFixed(2)} ALGO, deadline {new Date(form.watch("deadline")).toLocaleString()}
                   </p>
+                  {form.watch("payoutMode") === "milestones" ? (
+                    <div className="space-y-1 rounded-none border border-[#d7d7d7] bg-white p-2">
+                      <p className="text-xs font-semibold text-[#121212]">Milestone Plan</p>
+                      {form.watch("milestones").map((milestone, index) => (
+                        <p key={`${milestone.title}-${index}`} className="text-xs text-[#4b4b4b]">
+                          {index + 1}. {milestone.title} - {Number(milestone.amountAlgo || 0).toFixed(2)} ALGO
+                        </p>
+                      ))}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="mt-2 h-8 px-3 text-xs"
+                        onClick={() => void generateMilestonesWithAi()}
+                        disabled={milestoneSuggestionLoading}
+                      >
+                        {milestoneSuggestionLoading ? "Regenerating..." : "Regenerate Milestones with AI"}
+                      </Button>
+                    </div>
+                  ) : null}
                 </Card>
 
                 <Card className="space-y-3">
                   <p className="text-sm font-semibold">Wallet Check</p>
-                  <p className="text-xs text-[#4b4b4b]">Connected network: {connectedNetwork}</p>
-                  <p className="text-xs text-[#4b4b4b]">Current balance: {currentBalanceAlgo.toFixed(2)} ALGO</p>
-                  <p className="text-xs text-[#4b4b4b]">Amount to lock: {totalLockAlgo.toFixed(2)} ALGO</p>
+                  <p className="text-xs text-[#4b4b4b]">Connected network: {connectedNetwork.toUpperCase()}</p>
+                  <p className="text-xs text-[#4b4b4b]">Balance source: {walletBalanceSource}{walletMockMode ? " (mock mode)" : ""}</p>
+                  <p className="text-xs text-[#4b4b4b]">
+                    Current balance: {currentBalanceAlgo.toFixed(2)} ALGO ({currentBalanceMicroAlgo.toString()} microALGO)
+                  </p>
+                  <p className="text-xs text-[#4b4b4b]">
+                    Amount to lock: {totalLockAlgo.toFixed(2)} ALGO ({totalLockMicroAlgo.toString()} microALGO)
+                  </p>
+                  {!walletBalanceAvailable ? (
+                    <p className="text-xs text-[#7a5a00]">
+                      Live wallet balance unavailable. Publish will still run and backend validation will enforce funds checks.
+                    </p>
+                  ) : null}
 
                   {insufficientBalance ? (
                     <div className="border border-[#8f1515] bg-[#ffe7e7] p-2 text-xs text-[#8f1515]">
-                      Insufficient balance. You need {neededMoreAlgo.toFixed(2)} more ALGO. <Link href="/dashboard/wallet" className="underline">Top up</Link>
+                      Insufficient balance. You need {neededMoreAlgo.toFixed(2)} ALGO ({neededMoreMicroAlgo.toString()} microALGO) more.{" "}
+                      <Link href="/dashboard/wallet" className="underline">Top up</Link>
+                      {walletMockMode ? (
+                        <>
+                          {" "}| <Link href="/dashboard/wallet/add-funds" className="underline">Add mock funds</Link>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
 

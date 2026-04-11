@@ -3,7 +3,11 @@ import type { CiStatus, ScoringMode } from "../../lib/db/types";
 import { dbQuery } from "../../lib/db/client";
 import { processAiScoringJob } from "../services/aiScoring.service";
 
-export const inngest = new Inngest({ id: "bountyescrow-api" });
+export const inngest = new Inngest({
+  id: "bountyescrow-api",
+  eventKey: process.env.INNGEST_EVENT_KEY,
+  signingKey: process.env.INNGEST_SIGNING_KEY,
+});
 
 interface AiScoringRequestedEvent {
   data: {

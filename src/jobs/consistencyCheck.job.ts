@@ -5,6 +5,8 @@ import { runDisputeEscalationCycle } from "../services/dispute.service";
 import { logEvent } from "../utils/logger";
 
 const algorandService = new AlgorandService();
+const REVIEW_AUTO_RELEASE_ENABLED =
+  (process.env.REVIEW_AUTO_RELEASE_ENABLED ?? "false").toLowerCase() === "true";
 
 interface StuckSubmissionRow {
   id: string;
@@ -233,6 +235,64 @@ async function checkDisputeSla() {
   };
 }
 
+async function checkExpiredReviewWindows() {
+  if (!REVIEW_AUTO_RELEASE_ENABLED) {
+    return { auto_release_queued_count: 0 };
+  }
+
+  const candidates = await dbQuery<{
+    submission_id: string;
+    bounty_id: string;
+    final_score: number;
+  }>(
+    `
+      SELECT s.id AS submission_id,
+             s.bounty_id,
+             s.final_score
+      FROM submissions s
+      JOIN bounties b ON b.id = s.bounty_id
+      WHERE s.review_gate_status = 'awaiting_client_review'
+        AND s.review_window_ends_at IS NOT NULL
+        AND s.review_window_ends_at <= NOW()
+        AND s.approved_for_payout_at IS NULL
+        AND s.final_score IS NOT NULL
+        AND s.final_score >= b.ai_score_threshold
+        AND s.status IN ('submitted', 'validating', 'passed')
+        AND b.deleted_at IS NULL
+    `,
+  );
+
+  let queued = 0;
+  for (const row of candidates.rows) {
+    await dbQuery(
+      `
+        UPDATE submissions
+        SET review_gate_status = 'auto_released',
+            approved_for_payout_at = NOW(),
+            submission_stage = 'final',
+            status = 'validating',
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [row.submission_id],
+    );
+
+    await inngest.send({
+      name: "payout_release/requested",
+      data: {
+        submission_id: row.submission_id,
+        bounty_id: row.bounty_id,
+        final_score: row.final_score,
+      },
+    });
+    queued += 1;
+  }
+
+  return {
+    auto_release_queued_count: queued,
+  };
+}
+
 async function hasReminderBeenSent(userId: string, submissionId: string, eventType: string) {
   const existing = await dbQuery<{ id: string }>(
     `
@@ -340,6 +400,7 @@ export const consistencyCheckJob = inngest.createFunction(
       const payouts = await checkPayoutOrphans();
       const stuck = await checkStuckSubmissions();
       const disputeSla = await checkDisputeSla();
+      const autoRelease = await checkExpiredReviewWindows();
       const abandoned = await checkAbandonedSubmissions();
 
       return {
@@ -347,6 +408,7 @@ export const consistencyCheckJob = inngest.createFunction(
         ...payouts,
         ...stuck,
         ...disputeSla,
+        ...autoRelease,
         ...abandoned,
       };
     });

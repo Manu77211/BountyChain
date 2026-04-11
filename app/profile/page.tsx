@@ -9,7 +9,6 @@ import {
   meStatsRequest,
   updateMeRequest,
 } from "../../lib/api";
-import { connectPeraWallet } from "../../lib/pera-wallet";
 import { AppShell } from "../../src/components/layout/AppShell";
 import { Protected } from "../../components/protected";
 import { Button, Card, Input, PageIntro, Pill } from "../../components/ui/primitives";
@@ -48,6 +47,10 @@ type SummaryResponse = {
 type ProfileStatsResponse = {
   wallet_balance_algo?: number;
   wallet_balance_available?: boolean;
+  locked_escrow_algo?: number;
+  pending_payout_algo?: number;
+  total_paid_out_algo?: number;
+  total_earned_algo?: number;
 };
 
 type UpdateMeResponse = {
@@ -110,13 +113,15 @@ export default function ProfilePage() {
   const [showWallet, setShowWallet] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [connectingPera, setConnectingPera] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [sessionDropped, setSessionDropped] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [walletMessage, setWalletMessage] = useState<string | null>(null);
   const [walletBalanceAlgo, setWalletBalanceAlgo] = useState(0);
   const [walletBalanceAvailable, setWalletBalanceAvailable] = useState(true);
+  const [lockedEscrowAlgo, setLockedEscrowAlgo] = useState(0);
+  const [pendingPayoutAlgo, setPendingPayoutAlgo] = useState(0);
+  const [totalPaidOutAlgo, setTotalPaidOutAlgo] = useState(0);
+  const [totalEarnedAlgo, setTotalEarnedAlgo] = useState(0);
 
   useEffect(() => {
     hydrate();
@@ -131,6 +136,10 @@ export default function ProfilePage() {
       const stats = (await meStatsRequest(token)) as ProfileStatsResponse;
       setWalletBalanceAlgo(Number(stats.wallet_balance_algo ?? 0));
       setWalletBalanceAvailable(stats.wallet_balance_available !== false);
+      setLockedEscrowAlgo(Number(stats.locked_escrow_algo ?? 0));
+      setPendingPayoutAlgo(Number(stats.pending_payout_algo ?? 0));
+      setTotalPaidOutAlgo(Number(stats.total_paid_out_algo ?? 0));
+      setTotalEarnedAlgo(Number(stats.total_earned_algo ?? 0));
     } catch {
       setWalletBalanceAvailable(false);
     }
@@ -154,6 +163,10 @@ export default function ProfilePage() {
       setSummary(summaryResponse);
       setWalletBalanceAlgo(Number(statsResponse.wallet_balance_algo ?? 0));
       setWalletBalanceAvailable(statsResponse.wallet_balance_available !== false);
+      setLockedEscrowAlgo(Number(statsResponse.locked_escrow_algo ?? 0));
+      setPendingPayoutAlgo(Number(statsResponse.pending_payout_algo ?? 0));
+      setTotalPaidOutAlgo(Number(statsResponse.total_paid_out_algo ?? 0));
+      setTotalEarnedAlgo(Number(statsResponse.total_earned_algo ?? 0));
       setEmail(profileResponse.user.email ?? "");
       setWalletAddress(profileResponse.user.wallet_address ?? "");
       setSessionDropped(false);
@@ -209,45 +222,6 @@ export default function ProfilePage() {
       setError((requestError as Error).message);
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function onConnectPera() {
-    if (!token) {
-      return;
-    }
-
-    setConnectingPera(true);
-    setWalletMessage("Connecting to Pera Wallet...");
-    setError(null);
-
-    try {
-      const connectedAddress = await connectPeraWallet();
-      const response = (await updateMeRequest(token, {
-        wallet_address: connectedAddress,
-      })) as UpdateMeResponse;
-
-      setWalletAddress(response.user.wallet_address ?? connectedAddress);
-      setProfile((current) => {
-        if (!current) {
-          return {
-            user: response.user,
-            wallet_linked: Boolean(response.user.wallet_address),
-          };
-        }
-        return {
-          ...current,
-          user: response.user,
-          wallet_linked: Boolean(response.user.wallet_address),
-        };
-      });
-
-      await refreshWalletBalance();
-      setWalletMessage("Wallet provider selected. Manual wallet address saved in profile is used for account balance and explorer links.");
-    } catch (requestError) {
-      setWalletMessage((requestError as Error).message || "Unable to connect Pera wallet.");
-    } finally {
-      setConnectingPera(false);
     }
   }
 
@@ -322,9 +296,15 @@ export default function ProfilePage() {
                     <p className="mt-2 text-sm text-[#4b4b4b]">
                       Wallet: {showWallet ? (walletAddress || profile.user.wallet_address || "Not linked") : maskWallet(walletAddress || profile.user.wallet_address)}
                     </p>
-                    <p className="mt-1 text-sm text-[#4b4b4b]">Wallet Balance: {walletBalanceAlgo.toFixed(6)} ALGO</p>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">Available Balance: {walletBalanceAlgo.toFixed(6)} ALGO</p>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">Locked in Escrow: {lockedEscrowAlgo.toFixed(6)} ALGO</p>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">Pending Payout: {pendingPayoutAlgo.toFixed(6)} ALGO</p>
+                    <p className="mt-1 text-sm text-[#4b4b4b]">
+                      {role === "CLIENT"
+                        ? `Total Paid Out: ${totalPaidOutAlgo.toFixed(6)} ALGO`
+                        : `Total Earned: ${totalEarnedAlgo.toFixed(6)} ALGO`}
+                    </p>
                     {!walletBalanceAvailable ? <p className="mt-1 text-xs text-[#8f1515]">Unable to fetch live wallet balance right now.</p> : null}
-                    {walletMessage ? <p className="mt-1 text-xs text-[#4b4b4b]">{walletMessage}</p> : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Pill text={role || "USER"} />
@@ -352,9 +332,6 @@ export default function ProfilePage() {
                     </Button>
                     <Button variant="secondary" onClick={() => setShowWallet((current) => !current)}>
                       {showWallet ? "Hide Wallet" : "Show Wallet"}
-                    </Button>
-                    <Button variant="secondary" onClick={() => void onConnectPera()} disabled={connectingPera}>
-                      {connectingPera ? "Connecting..." : "Connect Pera"}
                     </Button>
                     <Button variant="secondary" onClick={() => void onDisconnectSession()} disabled={disconnecting}>
                       {disconnecting ? "Disconnecting..." : "Disconnect Session"}

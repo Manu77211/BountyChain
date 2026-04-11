@@ -6,7 +6,11 @@ import { emitToBounty } from "../realtime/socket";
 import { logEvent } from "../utils/logger";
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama3-70b-8192";
+const GROQ_DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama3-70b-8192"];
+const GROQ_MODELS = (process.env.GROQ_MODELS ?? process.env.GROQ_MODEL ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const GROQ_TIMEOUT_MS = 30_000;
 const AI_MAX_DIFF_BYTES = Number(process.env.AI_MAX_DIFF_BYTES ?? "200000");
 const AI_MAX_CRITERIA_BYTES = Number(process.env.AI_MAX_CRITERIA_BYTES ?? "12000");
@@ -46,6 +50,7 @@ interface SubmissionContext {
     id: string;
     bounty_id: string;
     freelancer_id: string;
+    submission_received_at: Date;
     ci_status: CiStatus;
     skipped_test_count: number;
     total_test_count: number;
@@ -55,6 +60,7 @@ interface SubmissionContext {
     id: string;
     acceptance_criteria: string;
     allowed_languages: string[];
+    deadline: Date;
     scoring_mode: ScoringMode;
     ai_score_threshold: number;
   };
@@ -101,11 +107,22 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
       clientRatingStars: context.submission.client_rating_stars ?? null,
     });
 
+    const adjusted = applyDeadlinePenalty(
+      ciOnly.finalScore,
+      context.submission.submission_received_at,
+      context.bounty.deadline,
+    );
+
     await dbQuery(
       `
         UPDATE submissions
         SET ai_score = NULL,
-            ai_score_raw = jsonb_build_object('mode', 'ci_only', 'scored_at', NOW()),
+            ai_score_raw = jsonb_build_object(
+              'mode', 'ci_only',
+              'scored_at', NOW(),
+              'deadline_deduction_percent', $4,
+              'hours_late', $5
+            ),
             final_score = $1,
             ai_scoring_in_progress = FALSE,
             ai_scoring_status = 'completed',
@@ -113,44 +130,50 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
             status = CASE WHEN $1 >= $2 THEN 'passed' ELSE 'failed' END
         WHERE id = $3
       `,
-      [ciOnly.finalScore, context.bounty.ai_score_threshold, context.submission.id],
+      [
+        adjusted.finalScore,
+        context.bounty.ai_score_threshold,
+        context.submission.id,
+        adjusted.deductionPercent,
+        adjusted.hoursLate,
+      ],
     );
 
-    if (ciOnly.finalScore >= context.bounty.ai_score_threshold) {
+    if (adjusted.finalScore >= context.bounty.ai_score_threshold) {
       await dispatcher.send("payout_release/requested", {
         submission_id: context.submission.id,
         bounty_id: context.bounty.id,
-        final_score: ciOnly.finalScore,
+        final_score: adjusted.finalScore,
       });
 
       emitToBounty(context.bounty.id, "bounty:scored", {
         bounty_id: context.bounty.id,
         submission_id: context.submission.id,
-        final_score: ciOnly.finalScore,
+        final_score: adjusted.finalScore,
         ai_score: null,
         state: "passed",
       });
 
-      return { state: "passed", ai_score: null, final_score: ciOnly.finalScore };
+      return { state: "passed", ai_score: null, final_score: adjusted.finalScore };
     }
 
     await notifyScoreFailure({
       submissionId: context.submission.id,
       freelancerId: context.submission.freelancer_id,
       creatorId: context.creatorId,
-      finalScore: ciOnly.finalScore,
+      finalScore: adjusted.finalScore,
       justification: "CI-only scoring result is below threshold.",
     });
 
     emitToBounty(context.bounty.id, "bounty:scored", {
       bounty_id: context.bounty.id,
       submission_id: context.submission.id,
-      final_score: ciOnly.finalScore,
+      final_score: adjusted.finalScore,
       ai_score: null,
       state: "failed",
     });
 
-    return { state: "failed", ai_score: null, final_score: ciOnly.finalScore };
+    return { state: "failed", ai_score: null, final_score: adjusted.finalScore };
   }
 
   if (
@@ -230,11 +253,19 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     clientRatingStars: context.submission.client_rating_stars ?? null,
   });
 
+  const adjusted = applyDeadlinePenalty(
+    finalScore.finalScore,
+    context.submission.submission_received_at,
+    context.bounty.deadline,
+  );
+
   await validateAndStoreScore({
     submissionId: context.submission.id,
     score: parsedScore,
     rawResponse: rawGroqContent,
-    finalScore: finalScore.finalScore,
+    finalScore: adjusted.finalScore,
+    deadlineDeductionPercent: adjusted.deductionPercent,
+    hoursLate: adjusted.hoursLate,
     eventHash,
   });
 
@@ -243,14 +274,14 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     emitToBounty(context.bounty.id, "bounty:scored", {
       bounty_id: context.bounty.id,
       submission_id: context.submission.id,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
       ai_score: parsedScore.total_score,
       state: "held_integrity",
     });
     return {
       state: "held_integrity",
       ai_score: parsedScore.total_score,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
     };
   }
 
@@ -259,22 +290,22 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     emitToBounty(context.bounty.id, "bounty:scored", {
       bounty_id: context.bounty.id,
       submission_id: context.submission.id,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
       ai_score: parsedScore.total_score,
       state: "language_override_required",
     });
     return {
       state: "language_override_required",
       ai_score: parsedScore.total_score,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
     };
   }
 
-  if (finalScore.finalScore >= context.bounty.ai_score_threshold) {
+  if (adjusted.finalScore >= context.bounty.ai_score_threshold) {
     await dispatcher.send("payout_release/requested", {
       submission_id: context.submission.id,
       bounty_id: context.bounty.id,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
     });
 
     await dbQuery(
@@ -285,7 +316,7 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     emitToBounty(context.bounty.id, "bounty:scored", {
       bounty_id: context.bounty.id,
       submission_id: context.submission.id,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
       ai_score: parsedScore.total_score,
       state: "passed",
     });
@@ -293,7 +324,7 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     return {
       state: "passed",
       ai_score: parsedScore.total_score,
-      final_score: finalScore.finalScore,
+      final_score: adjusted.finalScore,
     };
   }
 
@@ -306,14 +337,14 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
     submissionId: context.submission.id,
     freelancerId: context.submission.freelancer_id,
     creatorId: context.creatorId,
-    finalScore: finalScore.finalScore,
+    finalScore: adjusted.finalScore,
     justification: parsedScore.justification,
   });
 
   emitToBounty(context.bounty.id, "bounty:scored", {
     bounty_id: context.bounty.id,
     submission_id: context.submission.id,
-    final_score: finalScore.finalScore,
+    final_score: adjusted.finalScore,
     ai_score: parsedScore.total_score,
     state: "failed",
   });
@@ -321,7 +352,7 @@ export async function processAiScoringJob(input: AiScoringJobInput, dispatcher: 
   return {
     state: "failed",
     ai_score: parsedScore.total_score,
-    final_score: finalScore.finalScore,
+    final_score: adjusted.finalScore,
   };
 }
 
@@ -438,6 +469,7 @@ async function fetchBountyContext(submissionId: string, bountyId: string): Promi
     submission_id: string;
     bounty_id: string;
     freelancer_id: string;
+    submission_received_at: Date;
     ci_status: CiStatus;
     skipped_test_count: number;
     total_test_count: number;
@@ -446,6 +478,7 @@ async function fetchBountyContext(submissionId: string, bountyId: string): Promi
     ai_score_threshold: number;
     acceptance_criteria: string;
     allowed_languages: string[];
+    deadline: Date;
     creator_id: string;
   }>(
     `
@@ -453,6 +486,7 @@ async function fetchBountyContext(submissionId: string, bountyId: string): Promi
         s.id AS submission_id,
         s.bounty_id,
         s.freelancer_id,
+        s.submission_received_at,
         s.ci_status,
         s.skipped_test_count,
         s.total_test_count,
@@ -461,6 +495,7 @@ async function fetchBountyContext(submissionId: string, bountyId: string): Promi
         b.ai_score_threshold,
         b.acceptance_criteria,
         b.allowed_languages,
+        b.deadline,
         b.creator_id
       FROM submissions s
       JOIN bounties b ON b.id = s.bounty_id
@@ -483,6 +518,7 @@ async function fetchBountyContext(submissionId: string, bountyId: string): Promi
       id: row.submission_id,
       bounty_id: row.bounty_id,
       freelancer_id: row.freelancer_id,
+      submission_received_at: row.submission_received_at,
       ci_status: row.ci_status,
       skipped_test_count: row.skipped_test_count,
       total_test_count: row.total_test_count,
@@ -492,10 +528,26 @@ async function fetchBountyContext(submissionId: string, bountyId: string): Promi
       id: row.bounty_id,
       acceptance_criteria: row.acceptance_criteria,
       allowed_languages: row.allowed_languages,
+      deadline: row.deadline,
       scoring_mode: row.scoring_mode,
       ai_score_threshold: row.ai_score_threshold,
     },
     creatorId: row.creator_id,
+  };
+}
+
+function applyDeadlinePenalty(score: number, submittedAt: Date, deadline: Date) {
+  const hoursLate = (submittedAt.getTime() - deadline.getTime()) / (1000 * 60 * 60);
+  if (hoursLate <= 0) {
+    return { finalScore: score, deductionPercent: 0, hoursLate: 0 };
+  }
+
+  const deductionPercent = Math.min(Math.ceil(hoursLate) * 5, 50);
+  const adjusted = Math.max(0, Math.round(score * (1 - deductionPercent / 100)));
+  return {
+    finalScore: adjusted,
+    deductionPercent,
+    hoursLate: Math.ceil(hoursLate),
   };
 }
 
@@ -516,7 +568,6 @@ function buildScoringPrompt(input: {
   }\n\nReturn JSON:\n{\n  requirement_match_score: 0-40,\n  code_quality_score: 0-30,\n  ci_bonus: 0-20,\n  integrity_score: 0-10,\n  total_score: 0-100,\n  integrity_flag: boolean,\n  language_mismatch_flag: boolean,\n  language_detected: string,\n  justification: string (max 200 words),\n  recommendations: string[]\n}`;
 
   return {
-    model: GROQ_MODEL,
     temperature: 0.1,
     response_format: { type: "json_object" },
     messages: [
@@ -532,77 +583,90 @@ async function callGroqApi(payload: Record<string, unknown>) {
     throw new Error("AI-F-001: GROQ_API_KEY is missing");
   }
 
+  const models = GROQ_MODELS.length > 0 ? GROQ_MODELS : GROQ_DEFAULT_MODELS;
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
-    const startedAt = Date.now();
+  for (const model of models) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
+      const startedAt = Date.now();
 
-    try {
-      const response = await fetch(GROQ_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      if (response.status === 429 || response.status >= 500) {
-        logEvent("warn", "Groq API returned retryable status", {
-          event_type: "groq_api_retryable",
-          duration_ms: Date.now() - startedAt,
-          status_code: response.status,
-          attempt,
+      try {
+        const response = await fetch(GROQ_API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({ ...payload, model }),
+          signal: controller.signal,
         });
-        const retryableError = new Error(`AI-F-001: GROQ unavailable (${response.status})`);
-        lastError = retryableError;
+
+        if (response.status === 429 || response.status >= 500) {
+          logEvent("warn", "Groq API returned retryable status", {
+            event_type: "groq_api_retryable",
+            duration_ms: Date.now() - startedAt,
+            status_code: response.status,
+            attempt,
+            model,
+          });
+          const retryableError = new Error(`AI-F-001: GROQ unavailable (${response.status})`);
+          lastError = retryableError;
+          if (attempt < 3) {
+            await wait(attempt * attempt * 500);
+            continue;
+          }
+          break;
+        }
+
+        if (!response.ok) {
+          const detail = await response.text();
+          const modelUnavailable = response.status === 400 || response.status === 404;
+          logEvent("warn", "Groq API returned non-success status", {
+            event_type: modelUnavailable ? "groq_api_model_unavailable" : "groq_api_error",
+            duration_ms: Date.now() - startedAt,
+            status_code: response.status,
+            attempt,
+            model,
+          });
+          lastError = new Error(`GROQ request failed (${response.status}): ${detail.slice(0, 200)}`);
+
+          if (modelUnavailable) {
+            break;
+          }
+          throw lastError;
+        }
+
+        const body = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const content = body.choices?.[0]?.message?.content;
+        if (!content) {
+          throw new Error("AI-F-002: GROQ returned empty content");
+        }
+
+        logEvent("info", "Groq API scoring call completed", {
+          event_type: "groq_api_scored",
+          duration_ms: Date.now() - startedAt,
+          attempt,
+          model,
+        });
+
+        return content;
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          lastError = new Error("AI-F-006: GROQ scoring timed out after 30s");
+        } else {
+          lastError = error;
+        }
+
         if (attempt < 3) {
           await wait(attempt * attempt * 500);
-          continue;
         }
-        throw retryableError;
+      } finally {
+        clearTimeout(timeout);
       }
-
-      if (!response.ok) {
-        logEvent("warn", "Groq API returned non-success status", {
-          event_type: "groq_api_error",
-          duration_ms: Date.now() - startedAt,
-          status_code: response.status,
-          attempt,
-        });
-        throw new Error(`GROQ request failed (${response.status})`);
-      }
-
-      const body = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const content = body.choices?.[0]?.message?.content;
-      if (!content) {
-        throw new Error("AI-F-002: GROQ returned empty content");
-      }
-
-      logEvent("info", "Groq API scoring call completed", {
-        event_type: "groq_api_scored",
-        duration_ms: Date.now() - startedAt,
-        attempt,
-      });
-
-      return content;
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        lastError = new Error("AI-F-006: GROQ scoring timed out after 30s");
-      } else {
-        lastError = error;
-      }
-
-      if (attempt < 3) {
-        await wait(attempt * attempt * 500);
-      }
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -690,6 +754,8 @@ async function validateAndStoreScore(input: {
   score: GroqScorePayload;
   rawResponse: string;
   finalScore: number;
+  deadlineDeductionPercent: number;
+  hoursLate: number;
   eventHash: string;
 }) {
   const aiRaw = {
@@ -697,6 +763,8 @@ async function validateAndStoreScore(input: {
     raw_response: input.rawResponse,
     scored_at: new Date().toISOString(),
     event_hash: input.eventHash,
+    deadline_deduction_percent: input.deadlineDeductionPercent,
+    hours_late: input.hoursLate,
   };
 
   const sql = `

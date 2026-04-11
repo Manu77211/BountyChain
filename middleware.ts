@@ -69,18 +69,14 @@ export function middleware(request: NextRequest) {
   }
 
   if (pathname === "/connect") {
-    if (authenticated) {
-      const target = request.nextUrl.clone();
-      target.pathname = "/dashboard";
-      target.search = "";
-      return NextResponse.redirect(target);
-    }
-    return NextResponse.next();
+    const target = request.nextUrl.clone();
+    target.pathname = authenticated ? "/dashboard" : "/login";
+    return NextResponse.redirect(target);
   }
 
   if (isProtectedPath(pathname) && !authenticated) {
     const target = request.nextUrl.clone();
-    target.pathname = "/connect";
+    target.pathname = "/login";
     target.search = `?redirect=${encodeURIComponent(`${pathname}${search}`)}`;
     return NextResponse.redirect(target);
   }

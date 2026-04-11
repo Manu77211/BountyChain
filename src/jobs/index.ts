@@ -9,6 +9,7 @@ import { disputeResolutionJob } from "./disputeResolution.job";
 import { sendNotificationCompatJob, sendNotificationJob } from "./sendNotification.job";
 import { consistencyCheckJob } from "./consistencyCheck.job";
 import { sanctionsSyncJob } from "./sanctionsSync.job";
+import { hackathonReviewJob } from "./hackathonReview.job";
 
 export const inngestApp = serve({
   client: inngest,
@@ -22,6 +23,7 @@ export const inngestApp = serve({
     disputeResolutionJob,
     consistencyCheckJob,
     sanctionsSyncJob,
+    hackathonReviewJob,
     sendNotificationJob,
     sendNotificationCompatJob,
   ],

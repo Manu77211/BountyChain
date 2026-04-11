@@ -32,7 +32,7 @@ function getInitialRoleFromQuery(): "CLIENT" | "FREELANCER" {
 function RegisterContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { register, loginWithPera, loading, error, token, user, hydrate } = useAuthStore();
+  const { register, loading, error, token, user, hydrate } = useAuthStore();
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -58,14 +58,6 @@ function RegisterContent() {
         password,
         role,
       });
-    } catch {
-      // Error message is managed in the store.
-    }
-  }
-
-  async function onRegisterWithPera() {
-    try {
-      await loginWithPera(role);
     } catch {
       // Error message is managed in the store.
     }
@@ -98,10 +90,6 @@ function RegisterContent() {
 
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Creating account..." : "Create account"}
-          </Button>
-
-          <Button type="button" variant="secondary" disabled={loading} className="w-full" onClick={() => void onRegisterWithPera()}>
-            {loading ? "Connecting Wallet..." : "Register with Pera Wallet"}
           </Button>
         </form>
 

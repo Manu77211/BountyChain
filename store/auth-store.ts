@@ -1,8 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { AuthPayload, loginRequest, registerRequest, walletLoginRequest } from "../lib/api";
-import { connectPeraWallet, signLoginMessageWithPera } from "../lib/pera-wallet";
+import { AuthPayload, loginRequest, registerRequest } from "../lib/api";
 import { AUTH_STORAGE_KEY, LEGACY_AUTH_STORAGE_KEY } from "../lib/project-config";
 
 type User = AuthPayload["user"];
@@ -41,7 +40,6 @@ interface AuthState {
     portfolio?: string[];
   }) => Promise<void>;
   login: (payload: { email: string; password: string }) => Promise<void>;
-  loginWithPera: (role: "CLIENT" | "FREELANCER") => Promise<void>;
   logout: () => void;
 }
 
@@ -132,28 +130,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       throw error;
     }
   },
-  loginWithPera: async (role) => {
-    set({ loading: true, error: null });
-    try {
-      const walletAddress = await connectPeraWallet();
-      const signedMessage = getWalletLoginMessage(walletAddress);
-      const signature = await signLoginMessageWithPera(walletAddress, signedMessage);
 
-      const data = await walletLoginRequest({
-        wallet_address: walletAddress,
-        signed_message: signedMessage,
-        signature,
-        role: role === "CLIENT" ? "client" : "freelancer",
-      });
-
-      const normalized = normalizeUserRole(data.user);
-      persistAuthState(data);
-      set({ token: data.token, user: normalized, loading: false });
-    } catch (error) {
-      set({ loading: false, error: (error as Error).message });
-      throw error;
-    }
-  },
   logout: () => {
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(AUTH_STORAGE_KEY);

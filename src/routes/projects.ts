@@ -1,15 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import { dbQuery } from "../../lib/db/client";
+import { dbQuery, withTransaction } from "../../lib/db/client";
 import type { UserRole } from "../../lib/db/types";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
-import { emitToBounty } from "../realtime/socket";
+import { emitToBounty, emitToUser } from "../realtime/socket";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate";
 import { buildSubmissionFeedbackReport } from "../services/submissionFeedback.service";
+import { processAiScoringJob, type AiScoringJobInput } from "../services/aiScoring.service";
+import { processCiValidationJob } from "../services/validation.service";
+import { processPayoutRelease } from "../services/payout.service";
+import { parseGitHubRepo } from "../services/wallet";
+import { inngest } from "../jobs/aiScoring.job";
 
 const router = Router();
+const HACKATHON_MODE = process.env.HACKATHON_MODE === "true";
 
 const projectIdParamsSchema = z.object({
   id: z.string().uuid(),
@@ -47,7 +53,7 @@ const selectApplicantSchema = z.object({
 
 const milestoneSubmissionSchema = z.object({
   kind: z.enum(["DRAFT", "FINAL"]).optional(),
-  fileUrl: z.string().url().optional(),
+  fileUrl: z.string().trim().max(4000).optional(),
   notes: z.string().trim().max(5000).optional(),
 });
 
@@ -107,7 +113,9 @@ type ProjectDetailRow = {
   latest_submission_status: string | null;
   latest_submission_stage: string | null;
   latest_submission_gate_status: string | null;
+  latest_submission_ci_status: string | null;
   latest_submission_file_url: string | null;
+  latest_submission_notes: string | null;
   latest_submission_client_rating: number | null;
   latest_submission_client_comment: string | null;
   latest_feedback_client_summary: string | null;
@@ -233,6 +241,140 @@ function mapMeetingRow(row: ProjectMeetingRow) {
 function getAppBaseUrl() {
   const candidate = process.env.NEXT_PUBLIC_APP_URL ?? process.env.FRONTEND_URL ?? "http://localhost:3000";
   return candidate.replace(/\/+$/, "");
+}
+
+async function resolveGitHubRepoId(repoUrl: string | null | undefined) {
+  if (typeof repoUrl !== "string" || repoUrl.trim().length === 0) {
+    return 0;
+  }
+
+  const parsed = parseGitHubRepo(repoUrl);
+  const token = process.env.GITHUB_TOKEN;
+  if (!parsed || !token) {
+    return 0;
+  }
+
+  try {
+    const response = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+
+    if (!response.ok) {
+      return 0;
+    }
+
+    const body = (await response.json()) as { id?: number };
+    return Number.isFinite(body.id) ? Number(body.id) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function queuePayoutRelease(input: { submissionId: string; bountyId: string; finalScore: number }) {
+  try {
+    await inngest.send({
+      name: "payout_release/requested",
+      data: {
+        submission_id: input.submissionId,
+        bounty_id: input.bountyId,
+        final_score: input.finalScore,
+      },
+    });
+    return true;
+  } catch {
+    try {
+      await processPayoutRelease(
+        {
+          submission_id: input.submissionId,
+          bounty_id: input.bountyId,
+          final_score: input.finalScore,
+        },
+        {
+          send: async (eventName, data) => {
+            try {
+              await inngest.send({ name: eventName as never, data: data as never });
+            } catch {
+              // Ignore secondary dispatch failures in fallback mode.
+            }
+          },
+        },
+        {
+          emitToUser: async (userId, eventName, payload) => {
+            emitToUser(userId, eventName, payload);
+          },
+        },
+      );
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function runAiScoringFallback(input: AiScoringJobInput) {
+  try {
+    await processAiScoringJob(input, {
+      send: async (eventName, data) => {
+        if (eventName === "payout_release/requested") {
+          const payload = data as {
+            submission_id?: string;
+            bounty_id?: string;
+            final_score?: number;
+          };
+          if (!payload.submission_id || !payload.bounty_id || typeof payload.final_score !== "number") {
+            return;
+          }
+          await queuePayoutRelease({
+            submissionId: payload.submission_id,
+            bountyId: payload.bounty_id,
+            finalScore: payload.final_score,
+          });
+          return;
+        }
+
+        try {
+          await inngest.send({ name: eventName as never, data: data as never });
+        } catch {
+          // Ignore non-critical fallback dispatch failures.
+        }
+      },
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runCiValidationFallback(submissionId: string) {
+  try {
+    await processCiValidationJob(
+      { submission_id: submissionId },
+      {
+        send: async (eventName, data) => {
+          if (eventName === "ai_scoring/requested") {
+            try {
+              await inngest.send({ name: eventName as never, data: data as never });
+            } catch {
+              await runAiScoringFallback(data as AiScoringJobInput);
+            }
+            return;
+          }
+
+          await inngest.send({ name: eventName as never, data: data as never });
+        },
+      },
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function mapMessageRow(row: ProjectMessageRow) {
@@ -486,6 +628,90 @@ function mapSubmissionStatus(value: string | null) {
     return "VALIDATED";
   }
   return value.toUpperCase();
+}
+
+function normalizeArtifactUrl(value?: string | null) {
+  const raw = value?.trim() ?? "";
+  if (!raw) {
+    return "";
+  }
+
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (!parsed.hostname) {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function extractMilestoneDescriptions(acceptanceCriteria: string) {
+  const lines = acceptanceCriteria
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*\d.)\s]+/, "").trim())
+    .filter((line) => line.length >= 8);
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(line);
+  }
+
+  if (unique.length === 0) {
+    return [
+      "Project setup and scope alignment.",
+      "Core implementation and integration.",
+      "Final validation, fixes, and handoff.",
+    ];
+  }
+
+  return unique.slice(0, 6);
+}
+
+function splitMicroAmount(totalMicroAlgo: bigint, parts: number) {
+  if (parts <= 0) {
+    return [];
+  }
+
+  const partCount = BigInt(parts);
+  const base = totalMicroAlgo / partCount;
+  const remainder = totalMicroAlgo % partCount;
+
+  return Array.from({ length: parts }, (_value, index) =>
+    index < Number(remainder) ? base + 1n : base,
+  );
+}
+
+function buildMilestonePlan(acceptanceCriteria: string, totalAmountMicroAlgo: string) {
+  let total = 0n;
+  try {
+    total = BigInt(totalAmountMicroAlgo);
+  } catch {
+    total = 0n;
+  }
+
+  const firstDescription =
+    extractMilestoneDescriptions(acceptanceCriteria)[0] ??
+    "Complete the agreed bounty scope with delivery evidence.";
+
+  return [
+    {
+      title: "Milestone 1",
+      description: firstDescription,
+      payoutAmountMicroAlgo: total > 0n ? total : 1n,
+      orderIndex: 0,
+    },
+  ];
 }
 
 async function loadMarketplaceProjects(userId: string) {
@@ -1247,6 +1473,144 @@ router.post("/:id/draft-approve", requireAuth, validateParams(projectIdParamsSch
 });
 
 router.post(
+  "/:id/milestones/bootstrap",
+  requireAuth,
+  validateParams(projectIdParamsSchema),
+  async (request, response, next) => {
+    try {
+      const user = requireUser(request);
+      const projectId = request.params.id;
+
+      const project = await dbQuery<{
+        id: string;
+        creator_id: string;
+        total_amount: string;
+        acceptance_criteria: string;
+        selected_freelancer_id: string | null;
+      }>(
+        `
+          SELECT b.id,
+                 b.creator_id,
+                 b.total_amount::text,
+                 b.acceptance_criteria,
+                 selected.freelancer_id AS selected_freelancer_id
+          FROM bounties b
+          LEFT JOIN LATERAL (
+            SELECT pa.freelancer_id
+            FROM project_applications pa
+            WHERE pa.bounty_id = b.id
+              AND pa.status = 'selected'
+            ORDER BY pa.updated_at DESC
+            LIMIT 1
+          ) selected ON TRUE
+          WHERE b.id = $1
+            AND b.deleted_at IS NULL
+          LIMIT 1
+        `,
+        [projectId],
+      );
+
+      if ((project.rowCount ?? 0) === 0) {
+        throw new AppError(404, 404, "Bounty not found");
+      }
+
+      const context = project.rows[0];
+      const isClientOwner = context.creator_id === user.userId;
+      const isSelectedFreelancer = context.selected_freelancer_id === user.userId;
+      const canBootstrap = user.role === "admin" || isClientOwner || isSelectedFreelancer || HACKATHON_MODE;
+      if (!canBootstrap) {
+        throw new AppError(403, 403, "Only project participants can initialize milestones");
+      }
+
+      const existing = await dbQuery<{
+        id: string;
+        title: string;
+        description: string | null;
+        payout_amount: string;
+        status: string;
+        order_index: number;
+      }>(
+        `
+          SELECT id, title, description, payout_amount::text, status, order_index
+          FROM milestones
+          WHERE bounty_id = $1
+          ORDER BY order_index ASC, created_at ASC
+        `,
+        [projectId],
+      );
+
+      if ((existing.rowCount ?? 0) > 0) {
+        return response.status(200).json({
+          created: false,
+          milestones: existing.rows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            description: row.description,
+            amount: Number(row.payout_amount ?? "0"),
+            status: row.status,
+            orderIndex: row.order_index,
+          })),
+        });
+      }
+
+      const plan = buildMilestonePlan(context.acceptance_criteria, context.total_amount);
+      const created = await withTransaction(async (client) => {
+        const rows: Array<{
+          id: string;
+          title: string;
+          description: string | null;
+          payout_amount: string;
+          status: string;
+          order_index: number;
+        }> = [];
+
+        for (const item of plan) {
+          const inserted = await client.query<{
+            id: string;
+            title: string;
+            description: string | null;
+            payout_amount: string;
+            status: string;
+            order_index: number;
+          }>(
+            `
+              INSERT INTO milestones (bounty_id, title, description, payout_amount, order_index, status)
+              VALUES ($1, $2, $3, $4, $5, 'pending')
+              RETURNING id, title, description, payout_amount::text, status, order_index
+            `,
+            [
+              projectId,
+              item.title,
+              item.description,
+              item.payoutAmountMicroAlgo.toString(),
+              item.orderIndex,
+            ],
+          );
+
+          rows.push(inserted.rows[0]);
+        }
+
+        return rows;
+      });
+
+      return response.status(201).json({
+        created: true,
+        milestones: created.map((row) => ({
+          id: row.id,
+          title: row.title,
+          description: row.description,
+          amount: Number(row.payout_amount ?? "0"),
+          status: row.status,
+          orderIndex: row.order_index,
+        })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
+
+router.post(
   "/:id/milestones/:milestoneId/submissions",
   requireAuth,
   validateParams(milestoneParamsSchema),
@@ -1254,13 +1618,13 @@ router.post(
   async (request, response, next) => {
     try {
       const user = requireUser(request);
-      if (user.role !== "freelancer" && user.role !== "admin") {
+      if (!HACKATHON_MODE && user.role !== "freelancer" && user.role !== "admin") {
         throw new AppError(403, 403, "Only freelancers can submit milestone work");
       }
 
       const { id: projectId, milestoneId } = request.params;
       const body = request.body as z.infer<typeof milestoneSubmissionSchema>;
-      const submissionKind = body.kind ?? "FINAL";
+      const requestedSubmissionKind = body.kind ?? "FINAL";
 
       const milestone = await dbQuery<{ id: string; bounty_id: string }>(
         `
@@ -1277,9 +1641,37 @@ router.post(
         throw new AppError(404, 404, "Milestone not found");
       }
 
-      const bounty = await dbQuery<{ acceptance_criteria: string }>(
+      const selectedFreelancer = await dbQuery<{ freelancer_id: string }>(
         `
-          SELECT acceptance_criteria
+          SELECT freelancer_id
+          FROM project_applications
+          WHERE bounty_id = $1
+            AND status = 'selected'
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `,
+        [projectId],
+      );
+
+      const selectedFreelancerId = selectedFreelancer.rows[0]?.freelancer_id ?? null;
+      const effectiveFreelancerId = selectedFreelancerId ?? (HACKATHON_MODE ? user.userId : null);
+      if (!effectiveFreelancerId) {
+        throw new AppError(409, 409, "Assign a freelancer before submitting work");
+      }
+
+      if (!HACKATHON_MODE && user.role !== "admin" && effectiveFreelancerId !== user.userId) {
+        throw new AppError(403, 403, "Only the selected freelancer can submit milestone work");
+      }
+
+      const bounty = await dbQuery<{
+        acceptance_criteria: string;
+        repo_url: string | null;
+        target_branch: string;
+      }>(
+        `
+          SELECT COALESCE(acceptance_criteria, '') AS acceptance_criteria,
+                 repo_url,
+                 COALESCE(NULLIF(target_branch, ''), 'main') AS target_branch
           FROM bounties
           WHERE id = $1
             AND deleted_at IS NULL
@@ -1292,8 +1684,18 @@ router.post(
         throw new AppError(404, 404, "Bounty not found");
       }
 
-      const evidenceUrl = body.fileUrl ?? `https://example.com/submissions/${projectId}/${milestoneId}`;
-      const branchName = `milestone-${milestoneId.slice(0, 8)}`;
+      const candidateUrl = normalizeArtifactUrl(body.fileUrl);
+      const effectiveSubmissionKind =
+        requestedSubmissionKind === "FINAL" && candidateUrl.length === 0
+          ? "DRAFT"
+          : requestedSubmissionKind;
+
+      const fallbackEvidenceUrl = bounty.rows[0].repo_url
+        ? `${bounty.rows[0].repo_url.replace(/\/+$/, "")}/pull/0`
+        : `https://example.com/submissions/${projectId}/${milestoneId}`;
+      const evidenceUrl = candidateUrl || fallbackEvidenceUrl;
+      const branchName = bounty.rows[0].target_branch;
+      const githubRepoId = await resolveGitHubRepoId(bounty.rows[0].repo_url);
       const idempotency = `milestone-${milestoneId}-${user.userId}`;
       const reviewWindowMinutes = Number(process.env.REVIEW_WINDOW_MINUTES ?? "720");
 
@@ -1309,7 +1711,7 @@ router.post(
           ORDER BY updated_at DESC
           LIMIT 1
         `,
-        [projectId, user.userId],
+        [projectId, effectiveFreelancerId],
       );
 
       let submissionId: string;
@@ -1321,10 +1723,11 @@ router.post(
             UPDATE submissions
             SET github_pr_url = $2,
                 github_branch = $3,
-                status = $4,
-                submission_stage = $5,
-                review_gate_status = $6,
-                review_window_ends_at = $7,
+                github_repo_id = $4,
+              status = $5,
+              submission_stage = $6,
+              review_gate_status = $7,
+              review_window_ends_at = $8,
                 submission_received_at = NOW(),
                 updated_at = NOW()
             WHERE id = $1
@@ -1333,10 +1736,11 @@ router.post(
             submissionId,
             evidenceUrl,
             branchName,
-            submissionKind === "FINAL" ? "submitted" : "draft",
-            submissionKind === "FINAL" ? "final" : "draft",
-            submissionKind === "FINAL" ? "awaiting_client_review" : "none",
-            submissionKind === "FINAL"
+            githubRepoId,
+            effectiveSubmissionKind === "FINAL" ? "submitted" : "draft",
+            effectiveSubmissionKind === "FINAL" ? "final" : "draft",
+            effectiveSubmissionKind === "FINAL" ? "awaiting_client_review" : "none",
+            effectiveSubmissionKind === "FINAL"
               ? new Date(Date.now() + reviewWindowMinutes * 60_000).toISOString()
               : null,
           ],
@@ -1357,18 +1761,19 @@ router.post(
               scoring_idempotency_key,
               submission_received_at
             )
-            VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8, $9, NOW())
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
             RETURNING id
           `,
           [
             projectId,
-            user.userId,
+            effectiveFreelancerId,
             evidenceUrl,
             branchName,
-            submissionKind === "FINAL" ? "submitted" : "draft",
-            submissionKind === "FINAL" ? "final" : "draft",
-            submissionKind === "FINAL" ? "awaiting_client_review" : "none",
-            submissionKind === "FINAL"
+            githubRepoId,
+            effectiveSubmissionKind === "FINAL" ? "submitted" : "draft",
+            effectiveSubmissionKind === "FINAL" ? "final" : "draft",
+            effectiveSubmissionKind === "FINAL" ? "awaiting_client_review" : "none",
+            effectiveSubmissionKind === "FINAL"
               ? new Date(Date.now() + reviewWindowMinutes * 60_000).toISOString()
               : null,
             `${idempotency}-${randomUUID()}`,
@@ -1406,12 +1811,12 @@ router.post(
         [
           submissionId,
           projectId,
-          user.userId,
+          effectiveFreelancerId,
           nextRevisionNo,
-          submissionKind === "FINAL" ? "final" : "draft",
+          effectiveSubmissionKind === "FINAL" ? "final" : "draft",
           evidenceUrl,
           body.notes ?? null,
-          JSON.stringify({ milestone_id: milestoneId, kind: submissionKind }),
+          JSON.stringify({ milestone_id: milestoneId, kind: effectiveSubmissionKind }),
         ],
       );
 
@@ -1463,21 +1868,43 @@ router.post(
           WHERE id = $1
             AND deleted_at IS NULL
         `,
-        [projectId, submissionKind],
+        [projectId, effectiveSubmissionKind],
       );
 
-      emitToBounty(projectId, submissionKind === "FINAL" ? "bounty:submission_finalized" : "bounty:submission_draft_saved", {
+      emitToBounty(projectId, effectiveSubmissionKind === "FINAL" ? "bounty:submission_finalized" : "bounty:submission_draft_saved", {
         bounty_id: projectId,
         submission_id: submissionId,
         revision_no: nextRevisionNo,
-        stage: submissionKind,
+        stage: effectiveSubmissionKind,
       });
+
+      let ciValidationQueued = false;
+      let ciValidationFallbackRan = false;
+      if (effectiveSubmissionKind === "FINAL") {
+        try {
+          await inngest.send({
+            name: "ci_validation/requested",
+            data: {
+              submission_id: submissionId,
+            },
+          });
+          ciValidationQueued = true;
+        } catch {
+          ciValidationQueued = false;
+          ciValidationFallbackRan = await runCiValidationFallback(submissionId);
+        }
+      }
 
       return response.status(201).json({
         id: submissionId,
-        status: submissionKind === "FINAL" ? "submitted" : "draft",
-        stage: submissionKind,
+        status: effectiveSubmissionKind === "FINAL" ? "submitted" : "draft",
+        stage: effectiveSubmissionKind,
+        requestedStage: requestedSubmissionKind,
+        downgradedToDraft: requestedSubmissionKind === "FINAL" && effectiveSubmissionKind === "DRAFT",
         revisionNo: nextRevisionNo,
+        ciValidationQueued,
+        ciValidationFallbackRan,
+        ciValidationStarted: ciValidationQueued || ciValidationFallbackRan,
         feedback: {
           clientSummary: feedback.clientSummary,
           freelancerSummary: feedback.freelancerSummary,
@@ -1629,7 +2056,9 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                ls.status AS latest_submission_status,
                ls.submission_stage AS latest_submission_stage,
                ls.review_gate_status AS latest_submission_gate_status,
+               ls.ci_status AS latest_submission_ci_status,
                ls.github_pr_url AS latest_submission_file_url,
+               lsr.notes AS latest_submission_notes,
                ls.client_rating_stars AS latest_submission_client_rating,
                ls.last_client_comment AS latest_submission_client_comment,
                lfr.client_summary AS latest_feedback_client_summary,
@@ -1671,14 +2100,26 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                  s.status,
                  s.submission_stage,
                  s.review_gate_status,
+               s.ci_status,
                  s.github_pr_url,
                  s.client_rating_stars,
                  s.last_client_comment
           FROM submissions s
           WHERE s.bounty_id = b.id
+            AND (
+              $2 IN ('client', 'admin')
+              OR s.freelancer_id = $3
+            )
           ORDER BY s.updated_at DESC
           LIMIT 1
         ) ls ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT sr.notes
+          FROM submission_revisions sr
+          WHERE sr.submission_id = ls.id
+          ORDER BY sr.revision_no DESC, sr.created_at DESC
+          LIMIT 1
+        ) lsr ON TRUE
         LEFT JOIN LATERAL (
           SELECT fr.client_summary,
                  fr.freelancer_summary,
@@ -1705,6 +2146,10 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
           ) AS validation_reports
           FROM submissions s
           WHERE s.bounty_id = b.id
+            AND (
+              $2 IN ('client', 'admin')
+              OR s.freelancer_id = $3
+            )
         ) vr ON TRUE
         LEFT JOIN LATERAL (
           SELECT json_agg(
@@ -1717,12 +2162,13 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
           FROM project_applications pa
           JOIN users u ON u.id = pa.freelancer_id
           WHERE pa.bounty_id = b.id
+            AND $2 IN ('client', 'admin')
         ) ap ON TRUE
         WHERE b.id = $1
           AND b.deleted_at IS NULL
         LIMIT 1
       `,
-      [projectId],
+      [projectId, user.role, user.userId],
     );
 
     if ((detail.rowCount ?? 0) === 0) {
@@ -1768,6 +2214,7 @@ router.get("/:id", requireAuth, validateParams(projectIdParamsSchema), async (re
                 id: row.latest_submission_id,
                 status: mapSubmissionStatus(row.latest_submission_status),
                 fileUrl: row.latest_submission_file_url ?? undefined,
+                notes: row.latest_submission_notes ?? undefined,
                 clientRating: row.latest_submission_client_rating ?? undefined,
                 stage: row.latest_submission_stage ?? undefined,
                 reviewGateStatus: row.latest_submission_gate_status ?? undefined,

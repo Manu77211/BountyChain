@@ -62,7 +62,7 @@ export function WalletChip({ token }: { token: string | null }) {
 
   function disconnectWallet() {
     logout();
-    router.replace("/connect");
+    router.replace("/login");
   }
 
   return (
@@ -104,12 +104,12 @@ export function WalletChip({ token }: { token: string | null }) {
             type="button"
             onClick={() => {
               setOpen(false);
-              router.push("/connect");
+              router.push("/profile");
             }}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-3"
           >
             <RefreshCw size={14} />
-            Switch wallet
+            Update wallet
           </button>
           <button
             type="button"

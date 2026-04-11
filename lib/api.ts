@@ -1,6 +1,15 @@
 function normalizeApiBaseUrl(rawUrl?: string) {
   const fallback = "http://localhost:4000/api";
   const candidate = (rawUrl ?? fallback).trim();
+
+  // In local dev, API runs on 4000 and frontend on 3000.
+  // Auto-correct accidental frontend base URLs to backend.
+  if (/^https?:\/\/(localhost|127\.0\.0\.1):3000(\/|$)/i.test(candidate)) {
+    return candidate.replace(/:3000/i, ":4000").replace(/\/+$/, "").endsWith("/api")
+      ? candidate.replace(/:3000/i, ":4000").replace(/\/+$/, "")
+      : `${candidate.replace(/:3000/i, ":4000").replace(/\/+$/, "")}/api`;
+  }
+
   const withoutTrailingSlash = candidate.replace(/\/+$/, "");
 
   if (withoutTrailingSlash.endsWith("/api")) {
@@ -244,6 +253,25 @@ export async function meStatsRequest(token: string) {
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to load dashboard stats"));
+  }
+
+  return response.json();
+}
+
+export async function setMockWalletBalanceRequest(token: string, amountAlgo: number) {
+  const response = await safeFetch(`${API_BASE_URL}/users/me/mock-balance`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      amount_algo: amountAlgo,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to set mock wallet balance"));
   }
 
   return response.json();
@@ -660,6 +688,21 @@ export async function createMilestoneSubmissionRequest(
   return response.json();
 }
 
+export async function bootstrapProjectMilestoneRequest(token: string, projectId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/projects/${projectId}/milestones/bootstrap`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to initialize milestone"));
+  }
+
+  return response.json();
+}
+
 export async function createSubmissionRequest(
   token: string,
   payload: { milestoneId: string; fileUrl?: string; notes?: string },
@@ -675,6 +718,27 @@ export async function createSubmissionRequest(
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to submit work"));
+  }
+
+  return response.json();
+}
+
+export async function updateSubmissionRequest(
+  token: string,
+  submissionId: string,
+  payload: { kind?: "DRAFT" | "FINAL"; fileUrl?: string; notes?: string },
+) {
+  const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to update submission"));
   }
 
   return response.json();
@@ -807,6 +871,21 @@ export async function retriggerSubmissionCiRequest(token: string, submissionId: 
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response, "Failed to re-trigger CI"));
+  }
+
+  return response.json();
+}
+
+export async function listSubmissionHackathonRunsRequest(token: string, submissionId: string) {
+  const response = await safeFetch(`${API_BASE_URL}/submissions/${submissionId}/hackathon-runs`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "Failed to load hackathon review runs"));
   }
 
   return response.json();

@@ -21,10 +21,9 @@ function resolveRedirectTarget(redirectParam: string | null, role?: string) {
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { login, loginWithPera, loading, error, token, user, hydrate } = useAuthStore();
+  const { login, loading, error, token, user, hydrate } = useAuthStore();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [walletRole, setWalletRole] = useState<"CLIENT" | "FREELANCER">("CLIENT");
 
   useEffect(() => {
     hydrate();
@@ -45,14 +44,6 @@ function LoginContent() {
     }
   }
 
-  async function onLoginWithPera() {
-    try {
-      await loginWithPera(walletRole);
-    } catch {
-      // Error message is managed in the store.
-    }
-  }
-
   return (
     <AuthShell
       title="Login"
@@ -60,7 +51,7 @@ function LoginContent() {
       sideNote={
         <div className="space-y-3">
           <p>Secure, role-based access for clients and freelancers with validation-gated escrow collaboration.</p>
-          <p>Use email login for standard sessions or Pera Wallet login for Algorand-native identity.</p>
+          <p>Use your email credentials to access your workspace.</p>
         </div>
       }
     >
@@ -82,23 +73,6 @@ function LoginContent() {
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Logging in..." : "Login"}
           </Button>
-
-          <div className="rounded-none border-2 border-[#121212] bg-white p-3">
-            <p className="text-sm font-semibold text-[#121212]">Wallet Login (Pera)</p>
-            <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
-              <select
-                className="w-full rounded-none border-2 border-[#121212] bg-white px-3 py-2 text-sm"
-                value={walletRole}
-                onChange={(event) => setWalletRole(event.target.value as "CLIENT" | "FREELANCER")}
-              >
-                <option value="CLIENT">Client</option>
-                <option value="FREELANCER">Freelancer</option>
-              </select>
-              <Button type="button" disabled={loading} onClick={() => void onLoginWithPera()}>
-                {loading ? "Connecting..." : "Login with Pera"}
-              </Button>
-            </div>
-          </div>
         </form>
 
         <p className="mt-5 text-sm text-[#3f3f3f]">
@@ -117,7 +91,7 @@ function LoginFallback() {
       sideNote={
         <div className="space-y-3">
           <p>Secure, role-based access for clients and freelancers with validation-gated escrow collaboration.</p>
-          <p>Use email login for standard sessions or Pera Wallet login for Algorand-native identity.</p>
+          <p>Use your email credentials to access your workspace.</p>
         </div>
       }
     >

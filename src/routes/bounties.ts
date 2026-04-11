@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Router } from "express";
+import { z } from "zod";
 import { dbQuery } from "../../lib/db/client";
 import { acceptBountyWithRowLock } from "../../lib/db/queries";
 import type { BountyRow, BountyStatus } from "../../lib/db/types";
@@ -23,6 +24,13 @@ import { parseGitHubRepo } from "../services/wallet";
 
 const router = Router();
 const algorand = new AlgorandService();
+
+function requireUser(request: Parameters<typeof requireAuth>[0]) {
+  if (!request.user) {
+    throw new AppError(401, 401, "Unauthorized");
+  }
+  return request.user;
+}
 
 const BOUNTY_SELECT_COLUMNS = [
   "id",
@@ -60,25 +68,6 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
 
     const existing = await getBountyByIdempotencyKey(idempotencyKey);
     if (existing) {
-      if (existing.status !== "open") {
-        const opened = await dbQuery(
-          `
-            UPDATE bounties
-            SET status = 'open',
-                updated_at = NOW()
-            WHERE id = $1
-              AND deleted_at IS NULL
-            RETURNING ${BOUNTY_SELECT_COLUMNS}
-          `,
-          [existing.id],
-        );
-
-        return response.status(200).json({
-          bounty: opened.rows[0] ?? existing,
-          idempotent: true,
-        });
-      }
-
       return response.status(200).json({
         bounty: existing,
         idempotent: true,
@@ -125,7 +114,7 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
       )
       VALUES (
         $1, $2, $3, $4, $5,
-        $6, $7, $8, 'open', $9,
+        $6, $7, $8, 'draft', $9,
         $10, $11, $12, $13
       )
       RETURNING ${BOUNTY_SELECT_COLUMNS}
@@ -158,26 +147,6 @@ router.post("/", requireAuth, validateBody(createBountySchema), async (request, 
       if (maybePg.code === "23505") {
         const existingByKey = await getBountyByIdempotencyKey(idempotencyKey);
         if (existingByKey) {
-          if (existingByKey.status !== "open") {
-            const opened = await dbQuery(
-              `
-                UPDATE bounties
-                SET status = 'open',
-                    updated_at = NOW()
-                WHERE id = $1
-                  AND deleted_at IS NULL
-                RETURNING ${BOUNTY_SELECT_COLUMNS}
-              `,
-              [existingByKey.id],
-            );
-
-            return response.status(200).json({
-              bounty: opened.rows[0] ?? existingByKey,
-              idempotent: true,
-              warnings,
-            });
-          }
-
           return response.status(200).json({
             bounty: existingByKey,
             idempotent: true,
@@ -232,6 +201,7 @@ router.post(
         const escrow = await algorand.createBountyEscrowWithRetry({
           bountyId: bounty.id,
           creatorWallet: request.user.walletAddress,
+          creatorUserId: request.user.userId,
           amountMicroAlgo: BigInt(bounty.total_amount),
         });
 
@@ -301,7 +271,7 @@ router.get("/", perIpRateLimiter, validateQuery(bountyListQuerySchema), async (r
           : "created_at";
 
     const params: unknown[] = [];
-    const where: string[] = ["deleted_at IS NULL"];
+    const where: string[] = ["deleted_at IS NULL", "status != 'draft'"];
 
     if (query.status) {
       params.push(query.status);
@@ -1079,5 +1049,169 @@ function buildBountyActivity(input: {
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
     .slice(0, 100);
 }
+
+// Assign a freelancer to a bounty from a project application
+router.post(
+  "/:id/assign",
+  requireAuth,
+  validateParams(idParamSchema),
+  validateBody(z.object({ applicationId: z.string().uuid() })),
+  async (request, response, next) => {
+    try {
+      const user = requireUser(request);
+      const bountyId = request.params.id;
+      const { applicationId } = request.body as { applicationId: string };
+
+      const bounty = await dbQuery<{
+        creator_id: string;
+        status: string;
+        repo_url: string;
+        target_branch: string;
+      }>(
+        `
+          SELECT creator_id, status, repo_url, target_branch
+          FROM bounties
+          WHERE id = $1
+            AND deleted_at IS NULL
+        `,
+        [bountyId],
+      );
+
+      if ((bounty.rowCount ?? 0) === 0) {
+        throw new AppError(404, 404, "Bounty not found");
+      }
+
+      if (bounty.rows[0].creator_id !== user.userId) {
+        throw new AppError(403, 403, "Only bounty creator can assign freelancers");
+      }
+
+      if (bounty.rows[0].status !== "open") {
+        throw new AppError(409, 409, "Bounty must be open to assign freelancers");
+      }
+
+      const application = await dbQuery<{
+        id: string;
+        freelancer_id: string;
+        bounty_id: string;
+        status: string;
+      }>(
+        `
+          SELECT id, freelancer_id, bounty_id, status
+          FROM project_applications
+          WHERE id = $1
+          LIMIT 1
+        `,
+        [applicationId],
+      );
+
+      if ((application.rowCount ?? 0) === 0) {
+        throw new AppError(404, 404, "Application not found");
+      }
+
+      if (application.rows[0].bounty_id !== bountyId) {
+        throw new AppError(400, 400, "Application does not belong to this bounty");
+      }
+
+      const freelancerId = application.rows[0].freelancer_id;
+      const bountyRow = bounty.rows[0];
+
+      await dbQuery(
+        `
+          UPDATE project_applications
+          SET status = CASE WHEN id = $1 THEN 'selected' ELSE 'rejected' END,
+              updated_at = NOW()
+          WHERE bounty_id = $2
+        `,
+        [applicationId, bountyId],
+      );
+
+      await dbQuery(
+        `UPDATE bounties SET status = 'in_progress', updated_at = NOW() WHERE id = $1`,
+        [bountyId],
+      );
+
+      const existingSubmission = await dbQuery<{ id: string }>(
+        `
+          SELECT id
+          FROM submissions
+          WHERE bounty_id = $1
+            AND freelancer_id = $2
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `,
+        [bountyId, freelancerId],
+      );
+
+      let submissionId = existingSubmission.rows[0]?.id ?? null;
+      if (!submissionId) {
+        submissionId = randomUUID();
+        const scoringIdempotencyKey = createHash("sha256")
+          .update(`${bountyId}:${freelancerId}:${submissionId}`)
+          .digest("hex");
+
+        await dbQuery(
+          `
+            INSERT INTO submissions (
+              id,
+              bounty_id,
+              freelancer_id,
+              github_pr_url,
+              github_branch,
+              github_repo_id,
+              status,
+              submission_stage,
+              review_gate_status,
+              review_window_ends_at,
+              scoring_idempotency_key,
+              submission_received_at
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              0,
+              'draft',
+              'draft',
+              'none',
+              NOW() + INTERVAL '7 days',
+              $6,
+              NOW()
+            )
+          `,
+          [
+            submissionId,
+            bountyId,
+            freelancerId,
+            `${bountyRow.repo_url}/pull/0`,
+            bountyRow.target_branch,
+            scoringIdempotencyKey,
+          ],
+        );
+      }
+
+      emitToBounty(bountyId, "bounty:accepted", {
+        bounty_id: bountyId,
+        submission_id: submissionId,
+        freelancer_id: freelancerId,
+      });
+
+      emitToUser(freelancerId, "bounty:accepted", {
+        bounty_id: bountyId,
+        submission_id: submissionId,
+        freelancer_id: freelancerId,
+      });
+
+      return response.status(200).json({
+        assigned: true,
+        submissionId,
+        message: "Freelancer assigned successfully",
+      });
+    } catch (error) {
+      return next(error);
+    }
+  },
+);
 
 export default router;

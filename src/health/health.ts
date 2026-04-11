@@ -121,6 +121,11 @@ router.get("/health", async (_request, response) => {
   return response.status(httpStatus).json({
     status,
     services,
+    algorand: {
+      network: process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet",
+      mock_mode: (process.env.ALGOD_MOCK_MODE ?? "true").toLowerCase() === "true",
+      explorer_tx_base_url: process.env.ALGO_EXPLORER_TX_BASE_URL ?? "https://testnet.algoexplorer.io/tx",
+    },
     uptime_seconds: Math.floor(process.uptime()),
     version: process.env.npm_package_version ?? "0.1.0",
   });

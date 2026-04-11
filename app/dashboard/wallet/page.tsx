@@ -22,8 +22,12 @@ type WalletProject = {
 };
 
 type WalletStats = {
+  wallet_balance_microalgo?: string;
   wallet_balance_algo?: number;
   wallet_balance_available?: boolean;
+  wallet_balance_source?: string;
+  wallet_balance_network?: string;
+  wallet_mock_mode?: boolean;
 };
 
 type FreelancerApplicationEntry = {
@@ -36,6 +40,10 @@ type FreelancerApplicationEntry = {
 export default function DashboardWalletPage() {
   const { token, user, hydrate } = useAuthStore();
   const [balance, setBalance] = useState(0);
+  const [balanceMicroAlgo, setBalanceMicroAlgo] = useState("0");
+  const [balanceSource, setBalanceSource] = useState("unknown");
+  const [network, setNetwork] = useState("testnet");
+  const [mockMode, setMockMode] = useState(false);
   const [projects, setProjects] = useState<WalletProject[]>([]);
   const [balanceAvailable, setBalanceAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -69,7 +77,11 @@ export default function DashboardWalletPage() {
 
         const typedStats = stats as WalletStats;
         setBalance(Number(typedStats.wallet_balance_algo ?? 0));
+        setBalanceMicroAlgo(String(typedStats.wallet_balance_microalgo ?? "0"));
         setBalanceAvailable(typedStats.wallet_balance_available !== false);
+        setBalanceSource(String(typedStats.wallet_balance_source ?? "unknown"));
+        setNetwork(String(typedStats.wallet_balance_network ?? "testnet"));
+        setMockMode(Boolean(typedStats.wallet_mock_mode));
         setProjects(projectList);
       } catch (requestError) {
         setError((requestError as Error).message);
@@ -113,7 +125,14 @@ export default function DashboardWalletPage() {
         <Card className="p-5">
           <p className="text-sm text-[#4b4b4b]">Current Balance</p>
           <p className="mt-2 text-3xl font-semibold">{balance.toFixed(6)} ALGO</p>
+          <p className="mt-1 text-xs text-[#4b4b4b]">{balanceMicroAlgo} microALGO</p>
+          <p className="mt-1 text-xs text-[#4b4b4b]">Source: {balanceSource} on {network.toUpperCase()}{mockMode ? " (mock mode)" : ""}</p>
           {!balanceAvailable ? <p className="mt-1 text-xs text-[#8f1515]">Unable to fetch live on-chain balance right now.</p> : null}
+          {mockMode ? (
+            <p className="mt-1 text-xs text-[#4b4b4b]">
+              Set a custom mock amount in <Link href="/dashboard/wallet/add-funds" className="underline">Add Funds</Link>.
+            </p>
+          ) : null}
         </Card>
         <Card className="p-5">
           <p className="text-sm text-[#4b4b4b]">Locked</p>
